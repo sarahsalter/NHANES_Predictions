@@ -1,0 +1,1713 @@
+---
+title: "NHANES Prediction"
+author: "Sarah Salter"
+date: "3/20/2018"
+output:
+  pdf_document: default
+  html_document: default
+subtitle: Machine Learning Project
+---
+
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+load("/Users/Downloads/nhanes2003-2004.Rda")
+nhanes_data <- nhanes2003_2004
+nhanes_data <- as.data.frame(apply(nhanes_data, 2, as.numeric))
+```
+
+##I. Introduction
+The National Health and Nutrition Examination Survey (NHANES) is a cross-sectional, nationally representative survey that assesses demographic, dietary and health-related questions and can be used to better understand differences in health and nutrition across the life-span.  The goal of this analysis is to predict 9-year survival status (for those of age 50 years and older) and the age for all NHANES participants of the 2003-2004 survey.  This dataset consists of 10122 participants and 813 variables related to patient demographics, dietary characteristics, body measurements, health status, etc. There are a total of 5 survey sections (Demographics, Dietary, Laboratory, Examination, Questionnaire), each containing at least one dataset [1]. A majority of the variables from these individual datasets are used within this data; however, not all are used. 
+
+It should be noted that each collected variable within the data had a corresponding 'target population' in regards to age. Whether a person was in that prespecified age range determined if they had their data collected corresponding to that variable. For instance, 'BMXHEAD' represents head circumference (cm) measurements for females and males ages 0-6 months only. All people that did not met the 0-6 month target age criteria were given a missing 'BMXHEAD' value.  
+
+One of the problems with this dataset is that there is a lot of informative missingness based on the variable specific target population. For some variables both informative missingness, due to a patient not being in the variable's target age range, and missingness cauesd by other reasons not related to the target age range (i.e- a question/measurement not being completed by mistake or refusal) were combined. Due to the fact that there is a lot of informative missingness, we must acknowledge that the data is not missing at random. Since dealing with informative missingness is beyond the scope of this course, I choose to proceed under the assumption that the data was missing at random; thus, the results will be biased and this should be taken into consideration when assessing each prediction performance. In an attempt to reduce the amount of bias, I chose to work mostly with variables that had the least amount of missing data and the widest target population age ranges. However, for certain categorical variables that I thought were exceptionally important for prediction, I recoded the missingness to its own level. For all other variables, I worked with complete data only and evaluated several combinations of variables to ensure the biggest patient population possible.
+
+
+##II. Predicting Age
+
+###A. Exploratory Analysis
+
+The exam ages within the NHANES dataset had a range from about 1 month - 84.8 years, with a median age at approximately 19 years old. A total of 692 participants had missing exam age, whom were not included in this analysis. A histogram and summary of age can be found in the appendix [2]. Since the goal is to predict exam age, I removed all patients that had this value missing. As a result, the new dataset contained 9430 patients and 813 predictors. Next, I did a brief evaluation of the data to determine if there were any other age variables in the dataset. I identified three predictors: 'RIDAGEMN', 'RIDAGEYR', and 'DMDHRAGE'. The variables 'RIDAGEMN' and 'RIDAGEYR' (which was coded in years) represent the age the individual was screened for participation in the survey. Most people were likely screened and examined within a similar timeframe, thus their ages would most likely be very similar if not identical. For this reason, I removed both of these age variables from the data set to in order to not have an unscientific prediction advantage. Next, I removed 'DMDHRAGE' variable which was defined as the age in years of the household reference person at the time of HH screening.  Although not all people in the survey were reference persons (only one for each houseld), if the reference person participated in the survey than this age would be very similar if not identical to their exam age, depending on how duration of time between their screening and exam. After removing patients who had missing outcome and these three age predictors, the refined dataset contained contained 9430 patients and 810 predictors. This data was used as the starting point (throughout the prediction analysis for exam age) before performing variable and patient selection based on incomplete data.  
+
+###B. Data 
+My initial step in the exploratory data analysis was to define some of the variables within the dataset. First, I looked through the individual datasets to get a sense of the predictors that were available. Then using apriori knowledge, I made a list of variables I thought would be good predictors of age, such as body measurements, medical conditions, dietary profiles, etc. Afterwards, I determined the names and characteristics of these variables within the dataset.  
+
+My second step was to evaluate all of the predictors with less than 25% missing data. For these predictors I calculated the correlation associated with each indivdual predictor and exam age (using only the combined complete data from exam age and the predictor of interest). For variables with the highest absolute correlation, I assessed the variable definition and the target population associated with this variable.  In this process a few variables were identified that were essentially meaningless predictors, such as patient id 'SEQN' and if body measurement exam was completed 'BMDSTATS'. These variables were removed, the absolute value correlations were calculated again, and the top variables were definied that were not defined in the previous correlation assessment. 
+
+Next, using the complete data associated with the predictors that had less than 25% missingness, I used a lasso method and assessed the non-zero coefficient variables.  I also conducted random forest/bagging and assessed the variable importance plot. For both of these techniques I assessed the variable definitions and the target population associated with the top variables (non-zero coefficient variables in the lasso technique and the top 20% of variables listed for the boosting technique).
+
+Using these variable definitions, the correlation calculations, and the lasso and random forest/bagging results, I created several datasets with different variables. Since the NHANES dataset contained a large amount of informative missingness based on patients not meeting the age criteria for certain variables, I tried to hand select variables that targeted all patients 0-150 years of age and other variables with 'large' age ranges to reduce potential bias from missing not at random data. For variables that had more restricted age ranges, I tried techniques which seperately (1) left the missing as is (2) redefined the missingness as its own level for categorical variables that I identified as being potential good predictors. Afterwards, I analyzed the missingness patterns and characteristics related to each patient and various chosen variables.  
+
+Furthermore, I identified some categorical variables that did not have good distribution amongst the levels. As a result, I combined some levels when necessary. For each dataset, I factored variables that were categorical and left all other variables defined as numeric. For some variables that I thought could have temporal issues (e.g- 9-year morality since this occurs after age was assessed) or time issues (education for people <19, pregnancy, time living in the US), I evaluated a dataset without these variables.  In each dataset, I evaluated only patients with complete data across all of the variables, where missingness was assessed in both ways as mentioned above (i.e- (1) missing was left as is or (2) recoded as its own level within the factored variable).
+
+###C. Finalized Patient Populations 
+
+```{r echo=TRUE, include=FALSE}
+load("/Users/sarahsalter/Downloads/nhanes2003-2004.Rda")
+nhanes_data <- nhanes2003_2004
+nhanes_data_drop <- nhanes_data[complete.cases(nhanes_data$RIDAGEEX),]
+nhanes_data.df <- as.data.frame(apply(nhanes_data_drop, 2, as.numeric))
+miss_var_new <- apply(nhanes_data.df, 2, function(nhanes_data.df) sum(length(which(is.na(nhanes_data.df)))))
+miss_patient_new <- apply(nhanes_data.df, 1, function(nhanes_data.df) sum(length(which(is.na(nhanes_data.df)))))
+data5 <- nhanes_data.df; dim(data5)
+
+################################################################################################################
+################################################################################################################
+#Hand Selected Variables for data5 
+data5 <- data5[,which(colnames(data5)=="DIQ010" | colnames(data5)=="DIQ050" | colnames(data5)=="HSQ520" | colnames(data5)=="HSD010" |
+                      colnames(data5)=="VIQ180" | colnames(data5)=="VIQ200" | colnames(data5)=="VIQ220" | colnames(data5)=="DR1TKCAL" |
+                      colnames(data5)=="DR1TPROT" | colnames(data5)=="DR1TCARB" | colnames(data5)=="DR1TSUGR" | colnames(data5)=="DR1TFIBE" |
+                      colnames(data5)=="DR1TTFAT" | colnames(data5)=="DR1TCHOL" | colnames(data5)=="DR1TATOC" | colnames(data5)=="DR1TVARA" |
+                      colnames(data5)=="DR1TBCAR" | colnames(data5)=="DR1TFA" | colnames(data5)=="DR1TVC" | colnames(data5)=="DR1TSFAT" |
+                      colnames(data5)=="DR1TVK" | colnames(data5)=="DR1TCALC" | colnames(data5)=="DR1TMAGN" | colnames(data5)=="DR1TIRON" |
+                      colnames(data5)=="DR1TSODI" | colnames(data5)=="DR1TPOTA" | colnames(data5)=="DR1TCAFF" | colnames(data5)=="DR1TALCO" |
+                      colnames(data5)=="WHQ070" | colnames(data5)=="WHQ090" | colnames(data5)=="BMXWT" | colnames(data5)=="BMXARML" |
+                      colnames(data5)=="BMXARMC" | colnames(data5)=="BMXHT" | colnames(data5)=="BMXBMI" | colnames(data5)=="BMXWAIST" | 
+                      colnames(data5)=="PEASCTM1" | colnames(data5)=="BPACSZ" | colnames(data5)=="BPQ020" | colnames(data5)=="DMDMARTL" |
+                      colnames(data5)=="DMDEDUC3" | colnames(data5)=="DMDEDUC2" | colnames(data5)=="RIAGENDR" | colnames(data5)=="RIDRETH1" |
+                      colnames(data5)=="DMDBORN" | colnames(data5)=="DMDCITZN" | colnames(data5)=="DMDYRSUS" | colnames(data5)=="DMDSCHOL" |
+                      colnames(data5)=="DMDHHSIZ" | colnames(data5)=="INDHHINC" | colnames(data5)=="RIDEXPRG"| colnames(data5)=="SIAPROXY" |
+                      colnames(data5)=="SIAINTRP" | colnames(data5)=="WTMEC2YR" | colnames(data5)=="DRABF" | colnames(data5)=="BAQ110" |
+                      colnames(data5)=="BPXML1" | colnames(data5)=="LBXWBCSI" | colnames(data5)=="LBXMCVSI" | colnames(data5)=="WHQ030" | 
+                      colnames(data5)=="MCQ160G" | colnames(data5)=="BPQ040A" | colnames(data5)=="BPQ080" | colnames(data5)=="MCQ160A" | 
+                      colnames(data5)=="MCQ160B" | colnames(data5)=="MCQ160C" | colnames(data5)=="MCQ160D" | colnames(data5)=="MCQ160E" |
+                      colnames(data5)=="MCQ160F" | colnames(data5)=="MCQ220" | colnames(data5)=="MCQ092" | colnames(data5)=="BPXPULS" |
+                      colnames(data5)=="RIDAGEEX")]
+
+#*********************************
+#Recode missingness
+#*********************************
+#1/3 Yes/Borderline-1; 2-No; Missing/Unkown-3
+data5$DIQ010 <- ifelse(data5$DIQ010==1 | data5$DIQ010==3, 1, data5$DIQ010)
+data5$DIQ010  <- replace(data5$DIQ010 , is.na(data5$DIQ010 ), 3)
+data5$DIQ010 <- ifelse(data5$DIQ010==9, 3, data5$DIQ010)
+#3-Missing
+data5$DIQ050 <- replace(data5$DIQ050 , is.na(data5$DIQ050 ), 3)
+data5$HSQ520
+#3-Refused/Don't Know/Missing
+data5$HSQ520 <- ifelse(data5$HSQ520==7 | data5$HSQ520==9, 3, data5$HSQ520)
+data5$HSQ520  <- replace(data5$HSQ520 , is.na(data5$HSQ520 ), 3)
+#1-Excellent/Good; 2-Good/Fair; 3-Poor; 4-Refused/Don'tKnow/Missing
+data5$HSD010 <- ifelse(data5$HSD010==1 | data5$HSD010==2, 1, data5$HSD010)
+data5$HSD010 <- ifelse(data5$HSD010==3 | data5$HSD010==4, 2, data5$HSD010)
+data5$HSD010 <- ifelse(data5$HSD010==5, 3, data5$HSD010)
+data5$HSD010 <- ifelse(data5$HSD010==7 | data5$HSD010==9, 4, data5$HSD010)
+data5$HSD010 <- replace(data5$HSD010, is.na(data5$HSD010), 4)
+#3-Don'tKnow/Missing
+data5$VIQ180 <- ifelse(data5$VIQ180==9, 3, data5$VIQ180)
+data5$VIQ180  <- replace(data5$VIQ180 , is.na(data5$VIQ180 ), 3)
+#3-Don'tKnow/Missing
+data5$VIQ200 <- ifelse(data5$VIQ200==9, 3, data5$VIQ200)
+data5$VIQ200  <- replace(data5$VIQ200 , is.na(data5$VIQ200 ), 3)
+#3-Don'tKnow/Missing
+data5$VIQ220 <- ifelse(data5$VIQ220==9, 3, data5$VIQ220)
+data5$VIQ220  <- replace(data5$VIQ220 , is.na(data5$VIQ220 ), 3)
+#3-Don'tKnow/Missing
+data5$WHQ070 <- ifelse(data5$WHQ070==9, 3, data5$WHQ070)
+data5$WHQ070  <- replace(data5$WHQ070 , is.na(data5$WHQ070 ), 3)
+#3-Don'tKnow/Missing
+data5$WHQ090 <- ifelse(data5$WHQ090==9, 3, data5$WHQ090)
+data5$WHQ090  <- replace(data5$WHQ090 , is.na(data5$WHQ090 ), 3)
+#6-Missing
+data5$BPACSZ  <- replace(data5$WHQ090 , is.na(data5$WHQ090 ), 6)
+#3-Don'tKnow/Missing
+data5$BPQ020 <- ifelse(data5$BPQ020==9, 3, data5$BPQ020)
+data5$BPQ020  <- replace(data5$BPQ020 , is.na(data5$BPQ020 ), 3)
+#1-Married/Living with Partner; 2-Widowed; 3-Divorced/Separated; 4-Never Married; 5-Refused/Missing
+data5$DMDMARTL <- ifelse(data5$DMDMARTL==1 | data5$DMDMARTL==6, 1, data5$DMDMARTL)
+data5$DMDMARTL <- ifelse(data5$DMDMARTL==3 | data5$DMDMARTL==4, 3, data5$DMDMARTL)
+data5$DMDMARTL <- ifelse(data5$DMDMARTL==5, 4, data5$DMDMARTL)
+data5$DMDMARTL[ is.na(data5$DMDMARTL) ] <- 5
+#1-Less than HS D; 2-HS D/AA D; 3- College Grad; 4-Missing/Unknown
+data5$DMDEDUC2 <- ifelse(data5$DMDEDUC2==1 | data5$DMDEDUC2==2, 1, data5$DMDEDUC2)
+data5$DMDEDUC2 <- ifelse(data5$DMDEDUC2==3 | data5$DMDEDUC2==4, 2, data5$DMDEDUC2)
+data5$DMDEDUC2 <- ifelse(data5$DMDEDUC2==5, 3, data5$DMDEDUC2)
+data5$DMDEDUC2 <- ifelse(data5$DMDEDUC2==7 | data5$DMDEDUC2==9, 4, data5$DMDEDUC2)
+data5$DMDEDUC2[ is.na(data5$DMDEDUC2) ] <- 4
+#16-Less than HS/ Less 9th/ Less 5th/Unknown/Missing
+data5$DMDEDUC3 <- ifelse(data5$DMDEDUC3==55 | data5$DMDEDUC3==66 | data5$DMDEDUC3==77 | data5$DMDEDUC3==99, 16, data5$DMDEDUC3)
+data5$DMDEDUC3[ is.na(data5$DMDEDUC3) ] <- 16
+#10-Refused/Missing
+data5$DMDYRSUS <- ifelse(data5$DMDYRSUS==77 | data5$DMDYRSUS==88 | data5$DMDYRSUS==99, 10, data5$DMDYRSUS)
+data5$DMDYRSUS[ is.na(data5$DMDYRSUS) ] <- 10
+#1-In School/Vacation; 2-No; 3-Unknown/Missing
+data5$DMDSCHOL <- ifelse(data5$DMDSCHOL==1 | data5$DMDSCHOL==2, 1, data5$DMDSCHOL)
+data5$DMDSCHOL <- ifelse(data5$DMDSCHOL==3, 2, data5$DMDSCHOL)
+data5$DMDSCHOL <- ifelse(data5$DMDSCHOL==7 | data5$DMDSCHOL==9, 3, data5$DMDSCHOL)
+data5$DMDSCHOL[ is.na(data5$DMDSCHOL) ] <- 3
+#3-Don'tKnow/Missing
+data5$BAQ110  <- replace(data5$BAQ110 , is.na(data5$BAQ110 ), 3)
+#0-Below Median; 1-Above Median; 2-Missing
+data5$BPXML1  <- replace(data5$BPXML1, is.na(data5$BPXML1 ), 2)
+data5$BPXML1 <- ifelse(data5$BPXML1>=140 & data5$BPXML1!=2, 1 ,data5$BPXML1)
+data5$BPXML1 <- ifelse(data5$BPXML1<140 & data5$BPXML1!=2 & data5$BPXML1!=1, 0 ,data5$BPXML1)   
+#4-Refused/Unkown/Missing
+data5$WHQ030 <- ifelse(data5$WHQ030==7 | data5$WHQ030==9, 4, data5$WHQ030)
+data5$WHQ030[ is.na(data5$WHQ030) ] <- 4
+#3-Don'tKnown/Missing
+data5$MCQ160G <- ifelse(data5$MCQ160G==9, 3, data5$MCQ160G)
+data5$MCQ160G[ is.na(data5$MCQ160G) ] <- 3
+#3-Don'tKnown/Missing
+data5$BPQ040A <- ifelse(data5$BPQ040A==9, 3, data5$BPQ040A)
+data5$BPQ040A[ is.na(data5$BPQ040A) ] <- 3
+#3-Don'tKnown/Missing
+data5$BPQ080 <- ifelse(data5$BPQ080==9, 3, data5$BPQ080)
+data5$BPQ080[ is.na(data5$BPQ080) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ160A <- ifelse(data5$MCQ160A==9, 3, data5$MCQ160A)
+data5$MCQ160A[ is.na(data5$MCQ160A) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ160B <- ifelse(data5$MCQ160B==9, 3, data5$MCQ160B)
+data5$MCQ160B[ is.na(data5$MCQ160B) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ160C <- ifelse(data5$MCQ160C==9, 3, data5$MCQ160C)
+data5$MCQ160C[ is.na(data5$MCQ160C) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ160D <- ifelse(data5$MCQ160D==9, 3, data5$MCQ160D)
+data5$MCQ160D[ is.na(data5$MCQ160D) ] <- 3
+#3-Don'tKnown/Missing/Refuse
+data5$MCQ160E <- ifelse(data5$MCQ160E==7 | data5$MCQ160E==9, 3, data5$MCQ160E)
+data5$MCQ160E[ is.na(data5$MCQ160E) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ160F <- ifelse(data5$MCQ160F==9, 3, data5$MCQ160F)
+data5$MCQ160F[ is.na(data5$MCQ160F) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ220 <- ifelse(data5$MCQ220==9, 3, data5$MCQ220)
+data5$MCQ220[ is.na(data5$MCQ220) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ092 <- ifelse(data5$MCQ092==9, 3, data5$MCQ092)
+data5$MCQ092[ is.na(data5$MCQ092) ] <- 3
+#3-Don'tKnown/Missing
+data5$DRABF[ is.na(data5$DRABF) ] <- 3
+#3-Don'tKnown/Missing
+data5$BPXPULS[ is.na(data5$BPXPULS) ] <- 3
+#Re-categorize?
+data5$RIDRETH1
+#3-Don'tKnown/Missing
+data5$DMDBORN <- ifelse(data5$DMDBORN==7,3,data5$DMDBORN)
+#3-Don'tKnown/Missing
+data5$DMDCITZN <- ifelse(data5$DMDCITZN==7,3,data5$DMDCITZN)
+#10-Don'tKnown/Missing/Refused
+data5$DMDYRSUS <- ifelse(data5$DMDYRSUS==77 | data5$DMDYRSUS==99 | data5$DMDYRSUS==88, 10, data5$DMDYRSUS)
+data5$DMDYRSUS[ is.na(data5$DMDYRSUS) ] <- 10
+#4-Missing/Unknown
+data5$INDHHINC <- ifelse(data5$INDHHINC==2, 1, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==3, 1, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==4, 1, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==13, 1, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==5, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==6, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==7, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==8, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==9, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==10, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==12, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==11, 3, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==14, 4, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==15, 4, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==77 | data5$INDHHINC==99,4,data5$INDHHINC)
+data5$INDHHINC[ is.na(data5$INDHHINC) ] <- 4
+#3-Missing/Unkown 
+data5$RIDEXPRG[ is.na(data5$RIDEXPRG) ] <- 3
+#Factor variables 
+data5$DIQ010 <-as.factor(data5$DIQ010)
+data5$DIQ050 <-as.factor(data5$DIQ050)
+data5$HSQ520 <-as.factor(data5$HSQ520)
+data5$HSD010 <-as.factor(data5$HSD010)
+data5$VIQ180 <-as.factor(data5$VIQ180)
+data5$VIQ200 <-as.factor(data5$VIQ200)
+data5$VIQ220 <-as.factor(data5$VIQ220)
+data5$WHQ070 <-as.factor(data5$WHQ070)
+data5$WHQ090 <-as.factor(data5$WHQ090)
+data5$BPACSZ <-as.factor(data5$BPACSZ)
+data5$BPQ020 <-as.factor(data5$BPQ020)
+data5$DMDMARTL <-as.factor(data5$DMDMARTL)
+data5$DMDEDUC2 <-as.factor(data5$DMDEDUC2)
+data5$DMDEDUC3 <-as.factor(data5$DMDEDUC3)
+data5$RIDRETH1 <-as.factor(data5$RIDRETH1)
+data5$DMDBORN <-as.factor(data5$DMDBORN)
+data5$DMDCITZN <-as.factor(data5$DMDCITZN)
+data5$DMDYRSUS <-as.factor(data5$DMDYRSUS)
+data5$DMDSCHOL <-as.factor(data5$DMDSCHOL)
+data5$INDHHINC <-as.factor(data5$INDHHINC)
+data5$DRABF <-as.factor(data5$DRABF)
+data5$BAQ110 <-as.factor(data5$BAQ110)
+data5$MCQ160G <-as.factor(data5$MCQ160G)
+data5$BPQ040A <-as.factor(data5$BPQ040A)
+data5$BPQ080 <-as.factor(data5$BPQ080 )
+data5$MCQ160A <-as.factor(data5$MCQ160A)
+data5$MCQ160B <-as.factor(data5$MCQ160B)
+data5$MCQ160C <-as.factor(data5$MCQ160C)
+data5$MCQ160D <-as.factor(data5$MCQ160D)
+data5$MCQ160E <-as.factor(data5$MCQ160E)
+data5$MCQ160F <-as.factor(data5$MCQ160F)
+data5$MCQ220 <-as.factor(data5$MCQ220)
+data5$MCQ092 <-as.factor(data5$MCQ092)
+data5$BPXPULS <-as.factor(data5$BPXPULS)
+data5$RIDEXPRG <- as.factor(data5$RIDEXPRG)
+complete_data5 <- data5[complete.cases(data5),]
+
+################################################################################################################
+################################################################################################################
+#Data 6
+data6 <- data5 
+data6 <- data6[,-which(colnames(data6)=="BMXWAIST" | colnames(data6)=="LBXWBCSI" | colnames(data6)=="LBXMCVSI")]
+complete_data6 <- data6[complete.cases(data6),]
+
+################################################################################################################
+################################################################################################################
+#Data 7
+data7 <- data5[,which(colnames(data5)=="DIQ010" | colnames(data5)=="DIQ050" | colnames(data5)=="HSD010" | colnames(data5)=="VIQ180" |
+                        colnames(data5)=="VIQ200" | colnames(data5)=="VIQ220" | colnames(data5)=="DR1TKCAL" | colnames(data5)=="DR1TPROT" |
+                        colnames(data5)=="DR1TCARB" | colnames(data5)=="DR1TSUGR" | colnames(data5)=="DR1TFIBE" | colnames(data5)=="DR1TTFAT" |
+                        colnames(data5)=="DR1TCHOL" | colnames(data5)=="DR1TSFAT" | colnames(data5)=="DR1TIRON" | colnames(data5)=="DR1TSODI" |
+                        colnames(data5)=="DR1TCAFF" | colnames(data5)=="DR1TALCO" | colnames(data5)=="BMXARML" | colnames(data5)=="BMXARMC" |
+                        colnames(data5)=="BMXHT" | colnames(data5)=="BMXBMI" | colnames(data5)=="BMXWAIST" | colnames(data5)=="PEASCTM1" |
+                        colnames(data5)=="BPACSZ" | colnames(data5)=="BPQ020" | colnames(data5)=="DMDMARTL" | colnames(data5)=="DMDEDUC2" |
+                        colnames(data5)=="RIAGENDR" | colnames(data5)=="DMDBORN" | colnames(data5)=="DMDCITZN" | colnames(data5)=="DMDHHSIZ" |
+                        colnames(data5)=="INDHHINC" | colnames(data5)=="SIAPROXY" | colnames(data5)=="SIAINTRP" | colnames(data5)=="WTMEC2YR" |
+                        colnames(data5)=="DRABF" | colnames(data5)=="BAQ110" | colnames(data5)=="BPXML1" | colnames(data5)=="LBXWBCSI" |
+                        colnames(data5)=="LBXMCVSI" | colnames(data5)=="WHQ030" | colnames(data5)=="MCQ160G" | colnames(data5)=="BPQ040A" |
+                        colnames(data5)=="BPQ080" | colnames(data5)=="MCQ160A" | colnames(data5)=="MCQ160B" | colnames(data5)=="MCQ160C" |
+                        colnames(data5)=="MCQ160D" | colnames(data5)=="MCQ160E" | colnames(data5)=="MCQ160F" | colnames(data5)=="MCQ220" | 
+                        colnames(data5)=="MCQ092" | colnames(data5)=="BPXPULS" | colnames(data5)=="RIDAGEEX")]
+complete_data7 <- data7[complete.cases(data7),]
+
+```
+
+In total I created 10 datasets, specifically 5 datasets with unique variable selection, each individually evaluated with both missingness approaches (and therefore different patient popualations). I performed several prediction techniques for each dataset. Using a validation approach, I trained each model using a random selection of 70% of the patients. Then I tested the model using the other 30% of the patients. I calculated a test error rate using my test data and assessed my prediction ability for each. Due to the fact I was only using a validation approach in the initial stages to assess dataset performances, I took into account the amount of predictors (relative the number of patients) to consider whether I was at great risk of potentially overfitting the models to the training data.  I selected the datasets that had good (if not the best) prediction ability and a reasonable amount of predictors based on the dataset size. The datasets consisted of the following dimensions: (1) consisted of 7193 patients & 72 predictors (2) consisted of 7698 patients & 69 predictors (3) consisted of 7139 patients & 55 predictors. Further to the appendix to see the variables that were included in each dataset.
+
+###D. Methods
+I performed ridge regression, the lasso, boosting, bagging, and random forest methods for all three data sets.  Across all datasets boosting and bagging appeared to outperform other methods.
+
+
+###E. Results
+Validation approaches and 5-fold cross validation approaches were used to assess test error. 
+
+maybe evaluate a summary and histogram of age related to the final patient population (or put this in the appendix)
+Concern about overfitting--- too many predictors 
+Cross Validation 
+MSE 
+
+
+##III. Predicting Mortality 
+
+
+###A. Exploratory Analysis
+for consistency exam age was used; however, it might have been more advantageous to use one of the other age variables since it has no missing data and would therefore yield a different patient population
+--it appears that there were less missing mortality in exam age which is another reason i felt exam age was the more appropriate variables to subset the data with 
+
+however for morality we are only predicting 50+
+the lower bound of target ages is between 20-50 therefore we don't have to be as concerned with missing not at random for the mortality problem
+however, age has a lot of informative missing issues since we are evaluating all age ranges and the target population ranges very quite a lot.  too 
+
+###B. Data 
+
+```{r}
+################################################################################################################
+#Morality Data 
+
+#New_data3
+new_data3 <- nhanes_data[,which(colnames(nhanes_data)=="mortstat" | colnames(nhanes_data)=="RIDAGEEX" | colnames(nhanes_data)=="LBXRDW" |
+                                colnames(nhanes_data)=="HSD010" | colnames(nhanes_data)=="LBDNENO" | colnames(nhanes_data)=="WTINT2YR" |
+                                colnames(nhanes_data)=="WTMEC2YR" | colnames(nhanes_data)=="LBXLYPCT" | colnames(nhanes_data)=="VIDORFM" |
+                                colnames(nhanes_data)=="BMXSUB" | colnames(nhanes_data)=="LBXNEPCT" | colnames(nhanes_data)=="INDFMPIR" |
+                                colnames(nhanes_data)=="LBXRBCSI" | colnames(nhanes_data)=="LBXHGB" | colnames(nhanes_data)=="VIXORCM" |
+                                colnames(nhanes_data)=="BAQ110" | colnames(nhanes_data)=="LBXWBCSI" | colnames(nhanes_data)=="LBXHCT" |
+                                colnames(nhanes_data)=="DIQ010" | colnames(nhanes_data)=="DIQ050" | colnames(nhanes_data)=="DIQ070" |
+                                colnames(nhanes_data)=="HSQ490" | colnames(nhanes_data)=="WHQ030" | colnames(nhanes_data)=="MCQ160G" |
+                                colnames(nhanes_data)=="RIAGENDR" | colnames(nhanes_data)=="DMQMILIT" | colnames(nhanes_data)=="RIDRETH1" |
+                                colnames(nhanes_data)=="DMDCITZN" | colnames(nhanes_data)=="DMDEDUC2" | colnames(nhanes_data)=="DMDMARTL" |
+                                colnames(nhanes_data)=="INDFMPIR" | colnames(nhanes_data)=="SIAPROXY" | colnames(nhanes_data)=="DRQSDT1" |
+                                colnames(nhanes_data)=="DRQSDT7" | colnames(nhanes_data)=="DR1TCAFF" | colnames(nhanes_data)=="DR1TKCAL" | 
+                                colnames(nhanes_data)=="DR1TCARB" | colnames(nhanes_data)=="DR1TSUGR" | colnames(nhanes_data)=="DR1TTFAT" |
+                                colnames(nhanes_data)=="DR1TSFAT" | colnames(nhanes_data)=="DR1TSODI" | colnames(nhanes_data)=="DR1TCHOL" |
+                                colnames(nhanes_data)=="PEASCTMI" | colnames(nhanes_data)=="BPXPULS" | colnames(nhanes_data)=="BPXML1" |
+                                colnames(nhanes_data)=="BPQ150D" | colnames(nhanes_data)=="BMXBMI" | colnames(nhanes_data)=="BMXWAIST" | 
+                                colnames(nhanes_data)=="BMXARMC" | colnames(nhanes_data)=="BMITRI" | colnames(nhanes_data)=="VIQ180" |
+                                colnames(nhanes_data)=="VIQ200" | colnames(nhanes_data)=="ALQ120Q" | colnames(nhanes_data)=="BPQ020" |
+                                colnames(nhanes_data)=="BPQ040A" | colnames(nhanes_data)=="BPQ080" | colnames(nhanes_data)=="CHQ001" |
+                                colnames(nhanes_data)=="MCQ160A" | colnames(nhanes_data)=="MCQ160B" | colnames(nhanes_data)=="MCQ160C" | 
+                                colnames(nhanes_data)=="MCQ160D" | colnames(nhanes_data)=="MCQ160E" | colnames(nhanes_data)=="MCQ160F" |
+                                colnames(nhanes_data)=="MCQ220" | colnames(nhanes_data)=="MCQ092" | colnames(nhanes_data)=="SSQ011" |
+                                colnames(nhanes_data)=="MCQ010" | colnames(nhanes_data)=="HSQ480" | colnames(nhanes_data)=="CDQ010" |
+                                colnames(nhanes_data)=="DR1_320" | colnames(nhanes_data)=="INDHHINC" | colnames(nhanes_data)=="BMXWT" |
+                                colnames(nhanes_data)=="DMDHHSIZ" | colnames(nhanes_data)=="RIDAGEYR")]
+
+new_data3$RIDAGEEX <- as.numeric(new_data3$RIDAGEEX)
+new_data3 <- new_data3[-which(new_data3$RIDAGEEX<50*12),]
+new_data3 <- new_data3[-which(is.na(new_data3$mortstat)==TRUE),]
+#******************************************
+#Re-Factor Using EXAM AGE************************
+#1 RIDAGEEX- Exam Age 
+#2 LBXRDW- Red cell distribution width (%)
+#3 HSD010- General Health Condition
+HSD010 <- ifelse(new_data3$HSD010==1 | new_data3$HSD010==2, 1, new_data3$HSD010)
+HSD010 <- ifelse(HSD010==3 | HSD010==4, 2, HSD010)
+HSD010 <- ifelse(HSD010==5, 3, HSD010)
+HSD010 <- ifelse(HSD010==7 | HSD010==9, 4, HSD010)
+HSD010 <- replace(HSD010, is.na(HSD010), 4)
+new_data3$HSD010 <- HSD010
+new_data3$HSD010 <- as.factor(new_data3$HSD010 )
+#4 LBDNENO- Segmented neutrophils number 
+new_data3$LBDNENO <- as.numeric(new_data3$LBDNENO)
+#5 WTINT2YR- Full sample 2 year interview weight 
+new_data3$WTINT2YR <- as.numeric(new_data3$WTINT2YR)
+#6 WTMEC2YR- Full sample 2 year MEC Exam Weight
+new_data3$WTMEC2YR <- as.numeric(new_data3$WTMEC2YR)
+#7 LBXLYPCT- Lymphocyte percent (%) 
+new_data3$LBXLYPCT <- as.numeric(new_data3$LBXLYPCT)
+#8 VIDORFM- OR Right Confidence level reading          
+new_data3$VIDORFM <- as.numeric(new_data3$VIDORFM)
+#9 BMXSUB- Subscapular Skinfold--- Body Fat Assessment  
+new_data3$BMXSUB <- as.numeric(new_data3$BMXSUB)
+#10 LBXNEPCT- Segmented neutrophils percent (%)
+new_data3$LBXNEPCT <- as.numeric(new_data3$LBXNEPCT)
+#11 INDFMPIR- Family PIR--- Poverty income ratio (PIR) 
+new_data3$INDFMPIR <- as.numeric(new_data3$INDFMPIR)
+#12 LBXRBCSI- Red blood cell count (million cells/uL)
+new_data3$LBXRBCSI <- as.numeric(new_data3$LBXRBCSI)
+#13 LBXHGB- Hemoglobin (g/dL)
+new_data3$LBXHGB <- as.numeric(new_data3$LBXHGB)
+#14 VIXORCM- Cylindrical Dioptric Power Right Eye
+new_data3$VIXORCM <- as.numeric(new_data3$VIXORCM)
+#15 BAQ110- Can you stand on your own?
+new_data3$BAQ110 <- as.numeric(new_data3$BAQ110)
+BAQ110 <- new_data3$BAQ110
+BAQ110[ is.na(BAQ110) ] <- 3
+new_data3$BAQ110 <- BAQ110
+new_data3$BAQ110 <- as.factor(new_data3$BAQ110)
+#16 LBXWBCSI- White blood cell count (1000 cells/uL)
+new_data3$LBXWBCSI <- as.numeric(new_data3$LBXWBCSI)
+#17 LBXHCT- Hematocrit (%)
+new_data3$LBXHCT <- as.numeric(new_data3$LBXHCT)
+#18 DIQ010- Doctors told you have diabetes 
+new_data3$DIQ010 <- as.numeric(new_data3$DIQ010)
+new_data3$DIQ010 <- ifelse(new_data3$DIQ010==2 | new_data3$DIQ010==3, 2, new_data3$DIQ010)
+new_data3$DIQ010 <- ifelse(new_data3$DIQ010==4, 3, new_data3$DIQ010)
+new_data3$DIQ010[ is.na(new_data3$DIQ010) ] <- 3
+new_data3$DIQ010 <- as.factor(new_data3$DIQ010)
+#19 DIQ050- Taking insulin now  
+new_data3$DIQ050 <- as.numeric(new_data3$DIQ050)
+new_data3$DIQ050[ is.na(new_data3$DIQ050) ] <- 3
+new_data3$DIQ050 <- as.factor(new_data3$DIQ050)
+#20 DIQ070- Taking diabetic pills to lower blood sugar? 
+new_data3$DIQ070 <- as.numeric(new_data3$DIQ070)
+new_data3$DIQ070[ is.na(new_data3$DIQ070) ] <- 3
+new_data3$DIQ070 <- as.factor(new_data3$DIQ070)
+#21 HSQ490- Inactive days due to physical/mental health
+new_data3$HSQ490 <- as.numeric(new_data3$HSQ490)
+#22 WHQ030- How do you consider your weight    
+new_data3$WHQ030 <- ifelse(new_data3$WHQ030==7 | new_data3$WHQ030==9, 4, new_data3$WHQ030)
+new_data3$WHQ030[ is.na(new_data3$WHQ030) ] <- 4
+new_data3$WHQ030 <- as.factor(new_data3$WHQ030)
+#23 MCQ160G- Ever told you had emphysema   
+new_data3$MCQ160G <- ifelse(new_data3$MCQ160G==9, 3, new_data3$MCQ160G)
+new_data3$MCQ160G[ is.na(new_data3$MCQ160G) ] <- 3
+new_data3$MCQ160G <- as.factor(new_data3$MCQ160G)
+#24 RIAGENDR- Gender
+#25 DMQMILIT- Veteran/Military Status        
+new_data3$DMQMILIT <- ifelse(new_data3$DMQMILIT==7, 3, new_data3$DMQMILIT)
+new_data3$DMQMILIT[ is.na(new_data3$DMQMILIT) ] <- 3
+new_data3$DMQMILIT <- as.factor(new_data3$DMQMILIT)
+#26 RIDRETH1- Ethnicity  
+#27 DMDCITZN- Citizenship Status     
+new_data3$DMDCITZN <- ifelse(new_data3$DMDCITZN==7, 2, new_data3$DMDCITZN)
+#28 DMDEDUC2- Education Ages 20+       
+new_data3$DMDEDUC2 <- ifelse(new_data3$DMDEDUC2==7 | new_data3$DMDEDUC2==9, 6, new_data3$DMDEDUC2)
+new_data3$DMDEDUC2[ is.na(new_data3$DMDEDUC2) ] <- 6
+#29 DMDMARTL- Marital Status  
+new_data3$DMDMARTL <- ifelse(new_data3$DMDMARTL==1 | new_data3$DMDMARTL==6, 1, new_data3$DMDMARTL)
+new_data3$DMDMARTL <- ifelse(new_data3$DMDMARTL==3 | new_data3$DMDMARTL==4, 3, new_data3$DMDMARTL)
+new_data3$DMDMARTL <- ifelse(new_data3$DMDMARTL==5, 4, new_data3$DMDMARTL)
+new_data3$DMDMARTL[ is.na(new_data3$DMDMARTL) ] <- 5
+new_data3$DMDMARTL <- as.factor(new_data3$DMDMARTL)
+#31 SIAPROXY- Proxy Used in SP Interview
+#32 DRQSDT1- Some type of weight loss/ low calorie/ low carb/ low sugar diet 
+new_data3$DRQSDT1 <- as.numeric(new_data3$DRQSDT1)
+new_data3$DRQSDT1[ is.na(new_data3$DRQSDT1) ] <- 3
+new_data3$DRQSDT1 <- as.factor(new_data3$DRQSDT1)
+#33 DRQSDT7- Diabetic diet               
+new_data3$DRQSDT7 <- ifelse(new_data3$DRQSDT7==7, 1, new_data3$DRQSDT7)
+new_data3$DRQSDT7[ is.na(new_data3$DRQSDT7) ] <- 3
+new_data3$DRQSDT7 <- as.factor(new_data3$DRQSDT7)
+#34 DR1TCAFF- Caffeine 
+new_data3$DR1TCAFF <- as.numeric(new_data3$DR1TCAFF)
+#35 DR1TKCAL- Calorie
+new_data3$DR1TKCAL <- as.numeric(new_data3$DR1TKCAL)
+#36 DR1TCARB- Carb
+new_data3$DR1TCARB <- as.numeric(new_data3$DR1TCARB)
+#37 DR1TSUGR- Sugar
+new_data3$DR1TSUGR <- as.numeric(new_data3$DR1TSUGR)
+#38 DR1TTFAT- Total Fat
+new_data3$DR1TTFAT <- as.numeric(new_data3$DR1TTFAT)
+#39 DR1TSFAT- Saturated Fat
+new_data3$DR1TSFAT <- as.numeric(new_data3$DR1TSFAT)
+#40 DR1TSODI- Sodium
+new_data3$DR1TSODI <- as.numeric(new_data3$DR1TSODI)
+#41 DR1TCHOL- Cholesterol
+new_data3$DR1TCHOL <- as.numeric(new_data3$DR1TCHOL)
+#43 BPXPULS- Pulse regular or irregular         
+new_data3$BPXPULS <- as.numeric(new_data3$BPXPULS)
+new_data3$BPXPULS[ is.na(new_data3$BPXPULS) ] <- 3
+new_data3$BPXPULS <- as.factor(new_data3$BPXPULS)
+#44 BPXML1- Pulse Maximum Inflation Levels
+new_data3$BPXML1 <- as.numeric(new_data3$BPXML1)
+#45 BPQ150D- Had cigarettes in past 30 minutes    
+new_data3$BPQ150D <- as.numeric(new_data3$BPQ150D)
+new_data3$BPQ150D[ is.na(new_data3$BPQ150D) ] <- 3
+new_data3$BPQ150D <- as.factor(new_data3$BPQ150D)
+#46 BMXBMI- BMI
+new_data3$BMXBMI <- as.numeric(new_data3$BMXBMI)
+#47 BMXWAIST- Waist Cirumference
+new_data3$BMXWAIST <- as.numeric(new_data3$BMXWAIST)
+#48 BMXARMC- Arm Circumference 
+new_data3$BMXARMC <- as.numeric(new_data3$BMXARMC)
+#49 BMITRI- Triceps Skinfold
+#50 VIQ180- Eye surgery for near sightedness   
+new_data3$VIQ180 <- as.numeric(new_data3$VIQ180)
+new_data3$VIQ180[ is.na(new_data3$VIQ180) ] <- 3
+new_data3$VIQ180 <- as.factor(new_data3$VIQ180)
+#51 VIQ200- Eye surgery for cataracts          
+new_data3$VIQ200 <- ifelse(new_data3$VIQ200==9, 3, new_data3$VIQ200)
+new_data3$VIQ200 <- as.numeric(new_data3$VIQ200)
+new_data3$VIQ200[ is.na(new_data3$VIQ200) ] <- 3
+new_data3$VIQ200 <- as.factor(new_data3$VIQ200)
+#52 ALQ120Q- How often drink alcohold over past 12 months 
+new_data3$ALQ120Q <- as.numeric(new_data3$ALQ120Q)
+#53 BPQ020- Ever told you had high blood pressure 
+new_data3$BPQ020 <- ifelse(new_data3$BPQ020==9, 3, new_data3$BPQ020)
+new_data3$BPQ020 <- as.numeric(new_data3$BPQ020)
+new_data3$BPQ020[ is.na(new_data3$BPQ020) ] <- 3
+new_data3$BPQ020 <- as.factor(new_data3$BPQ020)
+#54 BPQ040A- Taking prescription for hypertension 
+new_data3$BPQ040A <- ifelse(new_data3$BPQ040A==9, 3, new_data3$BPQ040A)
+new_data3$BPQ040A <- as.numeric(new_data3$BPQ040A)
+new_data3$BPQ040A[ is.na(new_data3$BPQ040A) ] <- 3
+new_data3$BPQ040A <- as.factor(new_data3$BPQ040A)
+#55 BPQ080- Doctor told you had high cholesterol -
+new_data3$BPQ080 <- ifelse(new_data3$BPQ080==9, 3, new_data3$BPQ080)
+new_data3$BPQ080 <- as.numeric(new_data3$BPQ080)
+new_data3$BPQ080[ is.na(new_data3$BPQ080) ] <- 3
+new_data3$BPQ080 <- as.factor(new_data3$BPQ080)
+#57 MCQ160A- Ever told you had arthitis          
+new_data3$MCQ160A <- ifelse(new_data3$MCQ160A==9, 3, new_data3$MCQ160A)
+new_data3$MCQ160A <- as.numeric(new_data3$MCQ160A)
+new_data3$MCQ160A[ is.na(new_data3$MCQ160A) ] <- 3
+new_data3$MCQ160A <- as.factor(new_data3$MCQ160A)
+#58 MCQ160B- Ever told you had congestive heart failure 
+new_data3$MCQ160B <- ifelse(new_data3$MCQ160B==9, 3, new_data3$MCQ160B)
+new_data3$MCQ160B <- as.numeric(new_data3$MCQ160B)
+new_data3$MCQ160B[ is.na(new_data3$MCQ160B) ] <- 3
+new_data3$MCQ160B <- as.factor(new_data3$MCQ160B)
+#59 MCQ160C- Ever told you had heart attack    
+new_data3$MCQ160C <- ifelse(new_data3$MCQ160C==9, 3, new_data3$MCQ160C)
+new_data3$MCQ160C <- as.numeric(new_data3$MCQ160C)
+new_data3$MCQ160C[ is.na(new_data3$MCQ160C) ] <- 3
+new_data3$MCQ160C <- as.factor(new_data3$MCQ160C)
+#60 MCQ160D- Ever told you had angina           
+new_data3$MCQ160D <- ifelse(new_data3$MCQ160D==9, 3, new_data3$MCQ160D)
+new_data3$MCQ160D <- as.numeric(new_data3$MCQ160D)
+new_data3$MCQ160D[ is.na(new_data3$MCQ160D) ] <- 3
+new_data3$MCQ160D <- as.factor(new_data3$MCQ160D)
+#61 MCQ160E- Ever told you had heart attack    
+new_data3$MCQ160E <- ifelse(new_data3$MCQ160E==9, 3, new_data3$MCQ160E)
+new_data3$MCQ160E <- as.numeric(new_data3$MCQ160E)
+new_data3$MCQ160E[ is.na(new_data3$MCQ160E) ] <- 3
+new_data3$MCQ160E <- as.factor(new_data3$MCQ160E)
+#62 MCQ160F- Ever told you had stroke         
+new_data3$MCQ160F <- ifelse(new_data3$MCQ160F==9, 3, new_data3$MCQ160F)
+new_data3$MCQ160F <- as.numeric(new_data3$MCQ160F)
+new_data3$MCQ160F[ is.na(new_data3$MCQ160F) ] <- 3
+new_data3$MCQ160F <- as.factor(new_data3$MCQ160F)
+#63 MCQ220- Ever told you have cancer          
+new_data3$MCQ220 <- ifelse(new_data3$MCQ220==9, 3, new_data3$MCQ220)
+new_data3$MCQ220 <- as.numeric(new_data3$MCQ220)
+new_data3$MCQ220[ is.na(new_data3$MCQ220) ] <- 3
+new_data3$MCQ220 <- as.factor(new_data3$MCQ220)
+#64 MCQ092- Ever receive blood transfusion    
+new_data3$MCQ092 <- ifelse(new_data3$MCQ092==9, 3, new_data3$MCQ092)
+new_data3$MCQ092 <- as.numeric(new_data3$MCQ092)
+new_data3$MCQ092[ is.na(new_data3$MCQ092) ] <- 3
+new_data3$MCQ092 <- as.factor(new_data3$MCQ092)
+#65 SSQ011- Anyone to help with emotional support
+new_data3$SSQ011 <- ifelse(new_data3$SSQ011==9, 4, new_data3$SSQ011)
+new_data3$SSQ011 <- as.numeric(new_data3$SSQ011)
+new_data3$SSQ011[ is.na(new_data3$SSQ011) ] <- 4
+new_data3$SSQ011 <- as.factor(new_data3$SSQ011)
+#66 MCQ010- Ever told you had asthma    
+new_data3$MCQ010 <- ifelse(new_data3$MCQ010==9, 3, new_data3$MCQ010)
+new_data3$MCQ010 <- as.numeric(new_data3$MCQ010)
+new_data3$MCQ010[ is.na(new_data3$MCQ010) ] <- 3
+new_data3$MCQ010 <- as.factor(new_data3$MCQ010)
+#67 HSQ480- Number of days mental health was not good 
+new_data3$HSQ480 <- as.numeric(new_data3$HSQ480)
+#69 DR1_320- Total plain water drank yesterday
+new_data3$DR1_320 <- as.numeric(new_data3$DR1_320)
+#70 INDHHINC- Annual Household Income 
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==2, 1, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==3, 1, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==4, 1, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==13, 1, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==5, 2, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==6, 2, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==7, 2, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==8, 2, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==9, 2, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==10, 2, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==12, 2, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==11, 3, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==14, 4, new_data3$INDHHINC)
+new_data3$INDHHINC <- ifelse(new_data3$INDHHINC==15, 4, new_data3$INDHHINC)
+new_data3$INDHHINC[ is.na(new_data3$INDHHINC) ] <- 4
+new_data3$INDHHINC <- as.factor(new_data3$INDHHINC)
+#71 mortstat- Mortality 
+new_data3$mortstat <- as.factor(new_data3$mortstat)
+#72 BMXWT- Weight
+new_data3$BMXWT <- as.numeric(new_data3$BMXWT)
+#73 DMDHHSIZ- Total number of people in household
+new_data3$DMDHHSIZ <- as.numeric(new_data3$DMDHHSIZ)
+#74 RIDAGEYR- Age in Years 
+new_data3$RIDAGEYR <- as.numeric(new_data3$RIDAGEYR)
+#74 MCQ160G- Ever told you had emphysema
+class(new_data3$MCQ160G); unique(new_data3$MCQ160G)
+#******************************************
+new_data3 <- new_data3[,-which(colnames(new_data3)=="BMITRI" | colnames(new_data3)=="BMXSUB" | colnames(new_data3)=="VIDORFM")]
+new_data3 <- new_data3[,-which(colnames(new_data3)=="VIXORCM" | colnames(new_data3)=="RIDAGEYR" | colnames(new_data3)=="ALQ120Q")]
+new_data3 <- new_data3[complete.cases(new_data3),]
+
+
+################################################################################################################
+################################################################################################################
+#New_data4
+new_data4 <- nhanes_data[,which(colnames(nhanes_data)=="mortstat" | colnames(nhanes_data)=="RIDAGEEX" | colnames(nhanes_data)=="BAQ110" |
+                                  colnames(nhanes_data)=="RIAGENDR" | colnames(nhanes_data)=="DMQMILIT" | colnames(nhanes_data)=="DMDMARTL" |
+                                  colnames(nhanes_data)=="DMDHHSIZ" | colnames(nhanes_data)=="WTMEC2YR" | colnames(nhanes_data)=="DIQ010" |
+                                  colnames(nhanes_data)=="DIQ050" | colnames(nhanes_data)=="DR1TSODI" | colnames(nhanes_data)=="HSD0103" |
+                                  colnames(nhanes_data)=="LBXWBCSI" | colnames(nhanes_data)=="LBXLYPCT" | colnames(nhanes_data)=="LBXNEPCT" |
+                                  colnames(nhanes_data)=="LBXRBCSI" | colnames(nhanes_data)=="LBXRDW" | colnames(nhanes_data)=="MCQ092" |
+                                  colnames(nhanes_data)=="MCQ160B" | colnames(nhanes_data)=="MCQ160G" | colnames(nhanes_data)=="SSQ011" |
+                                  colnames(nhanes_data)=="WHQ0302" | colnames(nhanes_data)=="INDHHINC" | colnames(nhanes_data)=="DR1TSFAT" |
+                                  colnames(nhanes_data)=="HSD010" | colnames(nhanes_data)=="LBDNENO" | colnames(nhanes_data)=="WHQ030")]
+new_data4$RIDAGEEX <- as.numeric(new_data4$RIDAGEEX)
+new_data4 <- new_data4[-which(new_data4$RIDAGEEX<50*12),]
+new_data4 <- new_data4[-which(is.na(new_data4$mortstat)==TRUE),]
+
+#Re-Factor Using EXAM AGE************************
+#1 RIDAGEEX- Exam Age 
+#2 LBXRDW- Red cell distribution width (%)
+new_data4$LBXRDW <- as.numeric(new_data4$LBXRDW)
+#3 HSD010- General Health Condition
+HSD010 <- ifelse(new_data4$HSD010==1 | new_data4$HSD010==2, 1, new_data4$HSD010)
+HSD010 <- ifelse(HSD010==3 | HSD010==4, 2, HSD010)
+HSD010 <- ifelse(HSD010==5, 3, HSD010)
+HSD010 <- ifelse(HSD010==7 | HSD010==9, 4, HSD010)
+HSD010 <- replace(HSD010, is.na(HSD010), 4)
+new_data4$HSD010 <- HSD010
+new_data4$HSD010 <- as.factor(new_data4$HSD010 )
+#4 LBDNENO- Segmented neutrophils number 
+new_data4$LBDNENO <- as.numeric(new_data4$LBDNENO)
+#6 WTMEC2YR- Full sample 2 year MEC Exam Weight
+new_data4$WTMEC2YR <- as.numeric(new_data4$WTMEC2YR)
+#7 LBXLYPCT- Lymphocyte percent (%) 
+new_data4$LBXLYPCT <- as.numeric(new_data4$LBXLYPCT)
+#10 LBXNEPCT- Segmented neutrophils percent (%)
+new_data4$LBXNEPCT <- as.numeric(new_data4$LBXNEPCT)
+#12 LBXRBCSI- Red blood cell count (million cells/uL) 
+new_data4$LBXRBCSI <- as.numeric(new_data4$LBXRBCSI)
+#15 BAQ110- Can you stand on your own?
+new_data4$BAQ110 <- as.numeric(new_data4$BAQ110)
+BAQ110 <- new_data4$BAQ110
+BAQ110[ is.na(BAQ110) ] <- 3
+new_data4$BAQ110 <- BAQ110
+new_data4$BAQ110 <- as.factor(new_data4$BAQ110)
+#16 LBXWBCSI- White blood cell count (1000 cells/uL)
+length(which(is.na(new_data4$LBXWBCSI)==TRUE)) #403
+#18 DIQ010- Doctors told you have diabetes 
+new_data4$DIQ010 <- as.numeric(new_data4$DIQ010)
+new_data4$DIQ010 <- ifelse(new_data4$DIQ010==2 | new_data4$DIQ010==3, 2, new_data4$DIQ010)
+new_data4$DIQ010 <- ifelse(new_data4$DIQ010==4, 3, new_data4$DIQ010)
+new_data4$DIQ010[ is.na(new_data4$DIQ010) ] <- 3
+new_data4$DIQ010 <- as.factor(new_data4$DIQ010)
+#19 DIQ050- Taking insulin now   
+new_data4$DIQ050 <- as.numeric(new_data4$DIQ050)
+new_data4$DIQ050[ is.na(new_data4$DIQ050) ] <- 3
+new_data4$DIQ050 <- as.factor(new_data4$DIQ050)
+#22 WHQ030- How do you consider your weight  
+new_data4$WHQ030 <- ifelse(new_data4$WHQ030==7 | new_data4$WHQ030==9, 4, new_data4$WHQ030)
+new_data4$WHQ030[ is.na(new_data4$WHQ030) ] <- 4
+new_data4$WHQ030 <- as.factor(new_data4$WHQ030)
+#23 MCQ160G- Ever told you had emphysema
+new_data4$MCQ160G <- ifelse(new_data4$MCQ160G==9, 3, new_data4$MCQ160G)
+new_data4$MCQ160G[ is.na(new_data4$MCQ160G) ] <- 3
+new_data4$MCQ160G <- as.factor(new_data4$MCQ160G)
+#24 RIAGENDR- Gender
+#25 DMQMILIT- Veteran/Military Status 
+new_data4$DMQMILIT <- ifelse(new_data4$DMQMILIT==7, 3, new_data4$DMQMILIT)
+new_data4$DMQMILIT[ is.na(new_data4$DMQMILIT) ] <- 3
+new_data4$DMQMILIT <- as.factor(new_data4$DMQMILIT)
+#29 DMDMARTL- Marital Status
+new_data4$DMDMARTL <- ifelse(new_data4$DMDMARTL==1 | new_data4$DMDMARTL==6, 1, new_data4$DMDMARTL)
+new_data4$DMDMARTL <- ifelse(new_data4$DMDMARTL==3 | new_data4$DMDMARTL==4, 3, new_data4$DMDMARTL)
+new_data4$DMDMARTL <- ifelse(new_data4$DMDMARTL==5, 4, new_data4$DMDMARTL)
+new_data4$DMDMARTL[ is.na(new_data4$DMDMARTL) ] <- 5
+new_data4$DMDMARTL <- as.factor(new_data4$DMDMARTL)
+#31 SIAPROXY- Proxy Used in SP Interview        
+#39 DR1TSFAT- Saturated Fat
+new_data4$DR1TSFAT <- as.numeric(new_data4$DR1TSFAT)
+#40 DR1TSODI- Sodium
+new_data4$DR1TSODI <- as.numeric(new_data4$DR1TSODI)
+#58 MCQ160B- Ever told you had congestive heart failure 
+new_data4$MCQ160B <- ifelse(new_data4$MCQ160B==9, 3, new_data4$MCQ160B)
+new_data4$MCQ160B <- as.numeric(new_data4$MCQ160B)
+new_data4$MCQ160B[ is.na(new_data4$MCQ160B) ] <- 3
+new_data4$MCQ160B <- as.factor(new_data4$MCQ160B)
+#64 MCQ092- Ever receive blood transfusion  
+new_data4$MCQ092 <- ifelse(new_data4$MCQ092==9, 3, new_data4$MCQ092)
+new_data4$MCQ092 <- as.numeric(new_data4$MCQ092)
+new_data4$MCQ092[ is.na(new_data4$MCQ092) ] <- 3
+new_data4$MCQ092 <- as.factor(new_data4$MCQ092)
+#65 SSQ011- Anyone to help with emotional support 
+new_data4$SSQ011 <- ifelse(new_data4$SSQ011==9, 4, new_data4$SSQ011)
+new_data4$SSQ011 <- as.numeric(new_data4$SSQ011)
+new_data4$SSQ011[ is.na(new_data4$SSQ011) ] <- 4
+new_data4$SSQ011 <- as.factor(new_data4$SSQ011)
+#70 INDHHINC- Annual Household Income 
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==2, 1, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==3, 1, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==4, 1, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==13, 1, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==5, 2, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==6, 2, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==7, 2, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==8, 2, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==9, 2, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==10, 2, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==12, 2, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==11, 3, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==14, 4, new_data4$INDHHINC)
+new_data4$INDHHINC <- ifelse(new_data4$INDHHINC==15, 4, new_data4$INDHHINC)
+new_data4$INDHHINC[ is.na(new_data4$INDHHINC) ] <- 4
+new_data4$INDHHINC <- as.factor(new_data4$INDHHINC)
+#71 mortstat- Mortality 
+new_data4$mortstat <- as.factor(new_data4$mortstat)
+#73 DMDHHSIZ- Total number of people in household
+new_data4$DMDHHSIZ <- as.numeric(new_data4$DMDHHSIZ)
+new_data4 <- new_data4[complete.cases(new_data4),]
+```
+
+
+
+since mortality is a categorical variable i re-factored some variables that had many levels with a few number of data points and/or a small amount of cases.  
+
+evaluated variables with 25% missingness
+evaluated each predictors correlation with the outcome
+re-categorized missingness
+factored variables
+evaluated variable selection techniques from lasso to reduce the number of predictors within the model
+evaluated variable importance plot
+
+###C. Finalized Patient Populations 
+3-5 patient populations were evaluated consisting of the following dimensions: 
+
+###D. Methods
+Lasso
+Ridge Regression
+Classification Tree
+Boosting
+SMV
+KNN
+
+###E. Results
+Validation approaches and 5-fold cross validation approaches were used to assess test error. 
+
+maybe evaluate a summary and histogram of mortality related to the final patient population (or put this in the appendix)
+Concern about overfitting--- too many predictors 
+Cross Validation 
+Misclassification Error
+ROC Curves? 
+
+##IV. Conclusions
+
+Conclusion for Age
+Conclusion for Mortality 
+
+Talk about the predictors that did best at predicting age 
+Talk about the predictors that did best at predicting mortality 
+
+Mention that the MSE is still pretty large. Several things that could have been looked at in an attempt to improve this error.  
+Additional techniques that should have been considered:
+more prediction techniques
+more parameter assessment
+interaction terms
+transformation of predictors
+non-linear terms 
+re-coding some variables
+Unforunately these things were not possible based on time constraints.  
+
+##V.  Appendix Predicting Age
+
+###[2]. Histogram/ Summary of Exam Age
+```{r, warning=FALSE}
+load("/Users/sarahsalter/Downloads/nhanes2003-2004.Rda")
+nhanes_data <- nhanes2003_2004
+nhanes_data$RIDAGEEX <- as.numeric(nhanes_data$RIDAGEEX)
+summary(nhanes_data$RIDAGEEX)
+summary(nhanes_data$RIDAGEEX/12)
+hist(nhanes_data$RIDAGEEX, xlab="Age (Months)", main = "Histogram of Exam Age")
+hist(nhanes_data$RIDAGEEX/12, xlab="Age (Yrs)", main = "Histogram of Exam Age")
+```
+
+###[3a]. Variables Contained in Age Dataset 1
+```{r}
+colnames(complete_data5)
+```
+
+```
+1.	DIQ010: Doctor told you have diabetes (1-150 Years)
+2.	DIQ050: Taking insulin now (1-150 Years)
+3.	HSQ520: Flu, pneumonia, ear infection in past 30 days? (1-150 Years)
+4.	HSD010: General Health Condition (12-150 Years)
+5.	VIQ180: Eye surgery for near sightedness (12-150 Years)
+6.	VIQ200: Eye surgery for cataracts (12-150 Years)
+7.	VIQ220: Glasses/ contacts worn for distance; (12-150 Years)
+8.	DR1TKCAL: Energy (Calories) (0-150 Years)
+9.	DR1TPROT: Protein (0-150 Years)
+10.	DR1TCARB: Carbohydrate (0-150 Years)
+11.	DR1TSUGR: Total sugars (0-150 Years)
+12.	DR1TFIBE: Dietary Fiber (0-150 Years) 
+13.	DR1TTFAT: Total Fat (0-150 Years)
+14.	DR1TCHOL: Cholesterol (0-150 Years)
+15.	DR1TATOC: Vitamin E (0-150 Years)
+16.	DR1TVARA: Vitamin A (0-150 Years)
+17.	DR1TBCAR: Beta-carotene (0-150 Years)
+18.	DR1TFA: Folic Acid (0-150 Years)
+19.	DR1TVC: Vitamin C (0-150 Years)
+20.	DR1TVK: Vitamin K (0-150 Years)
+21.	DR1TCALC: Calcium (0-150 Years)
+22.	DR1TMAGN: Magnesium (0-150 Years)
+23.	DR1TIRON: Iron (0-150 Years)
+24.	DR1TSODI: Sodium (0-150 Years)
+25.	DR1TPOTA: Potassium (0-150 Years)
+26.	DR1TCAFF: Caffeine (0-150 Years)
+27.	DR1TALCO: Alcohol (0-150 Years)
+28.	WHQ070: Tried to lose weight in past year (16-150 Years)
+29.	WHQ090: Tried not to gain weight in past year (16-150 Years)
+30.	BMXWT: Weight (0-150 Years)
+31.	BMXARML: Upper Arm Length (0-150 Years)
+32.	BMXARMC: Arm Circumference (0-150 Years)
+33.	BMXHT: Standing Height (2-150 Years)
+34.	BMXBMI: Body Mass Index (2-150 Years)
+35.	BMXWAIST: Waist Circumference (2-150 Years)
+36.	PEASCTM1: Blood Pressure Time in Seconds (0-150 Years)
+37.	BPACSZ: Coded cuff size; Recode missing (8-150 Years)
+38.	BPQ020: Ever told you had high blood pressure (16-150 Years)
+39.	DMDMARTL: Martial Status
+40.	DMDEDUC3: Education (6-19 Years)
+41.	DMDEDUC2: Eudcation (20-150 Years)
+42.	RIAGENDR: Gender (0-150 Years)
+43.	RIDRETH1: Race/Ethnicity (0-150 Years)
+44.	DMDBORN: Country of Birth (0-150 Years)
+45.	DMDCITZN: Citizenship Status (0-150 Years)
+46.	DMDYRSUS: Length of time in US (0-150 Years)
+47.	DMDSCHOL: Now attending school (6-19 Years)
+48.	DMDHHSIZ: Total number of people in the household (0-150 Years)
+49.	INDHHIC: Annual Household Income (0-150 Years)
+50.	RIDEXPRG: Pregnancy Status at Exam (8-59 Years)
+51.	SIAPROXY: Was a proxy used in SP interview
+52.	SIAINTRP: Was an interpreter used in SP interview 
+53.	WTMEC2YR: Full Sample 2 Year MEC Exam Weight (0-150 Years)
+54.	DRABF: Breast-fed infant (either day) (0-150 Years)
+55.	BAQ110: Can you stand on your own? (40-150 Years)
+56.	BPXML1: Pulse Maximum Inflation Levels
+57.	LBXWBCSI: White blood cell count (1-150 Years)
+58.	LBXMCVSI: Mean cell volume (1-150 Years)
+59.	WHQ030: How do you consider your weight (16-150 Years)
+60.	MCQ160G: Ever told you had emphysema (20-150 Years)
+61.	BPQ040A: Taking prescription for hypertension
+62.	BPQ080: Doctor told you had high cholesterol (20-150 Years)
+63.	MCQ160A: Ever told you had arthritis (20-150 Years)
+64.	MCQ160B: Ever told you had congestive heart failure (20-150 Years)
+65.	MCQ160C: Ever told you had coronary heart disease (20-150 Years)
+66.	MCQ160D: Ever told you had angina (20-150 Years)
+67.	MCQ160E: Ever told you had heart attack; (20-150 Years)
+68.	MCQ160F: Ever told you had stroke; (20-150 Years)
+69.	MCQ220: Ever told you have cancer; (20-150 Years)
+70.	MCQ092: Ever receive blood transfusion; (6-150 Years)
+71. DR1TSFAT: Total Saturated Fat (0-150 Years)
+72. BPXPULS: Is pulse irregular?
+73. RIDAGEEX: Patient age when exam was given 
+```
+###[3b]. Rational for Variables Contained in Age Dataset 1
+
+###[3c]. Refactoring/Coding Missingness
+```{r echo=FALSE, include=FALSE}
+load("/Users/sarahsalter/Downloads/nhanes2003-2004.Rda")
+nhanes_data <- nhanes2003_2004
+nhanes_data_drop <- nhanes_data[complete.cases(nhanes_data$RIDAGEEX),]
+nhanes_data.df <- as.data.frame(apply(nhanes_data_drop, 2, as.numeric))
+miss_var_new <- apply(nhanes_data.df, 2, function(nhanes_data.df) sum(length(which(is.na(nhanes_data.df)))))
+miss_patient_new <- apply(nhanes_data.df, 1, function(nhanes_data.df) sum(length(which(is.na(nhanes_data.df)))))
+data5 <- nhanes_data.df; dim(data5)
+
+################################################################################################################
+################################################################################################################
+#Hand Selected Variables for data5 
+data5 <- data5[,which(colnames(data5)=="DIQ010" | colnames(data5)=="DIQ050" | colnames(data5)=="HSQ520" | colnames(data5)=="HSD010" |
+                      colnames(data5)=="VIQ180" | colnames(data5)=="VIQ200" | colnames(data5)=="VIQ220" | colnames(data5)=="DR1TKCAL" |
+                      colnames(data5)=="DR1TPROT" | colnames(data5)=="DR1TCARB" | colnames(data5)=="DR1TSUGR" | colnames(data5)=="DR1TFIBE" |
+                      colnames(data5)=="DR1TTFAT" | colnames(data5)=="DR1TCHOL" | colnames(data5)=="DR1TATOC" | colnames(data5)=="DR1TVARA" |
+                      colnames(data5)=="DR1TBCAR" | colnames(data5)=="DR1TFA" | colnames(data5)=="DR1TVC" | colnames(data5)=="DR1TSFAT" |
+                      colnames(data5)=="DR1TVK" | colnames(data5)=="DR1TCALC" | colnames(data5)=="DR1TMAGN" | colnames(data5)=="DR1TIRON" |
+                      colnames(data5)=="DR1TSODI" | colnames(data5)=="DR1TPOTA" | colnames(data5)=="DR1TCAFF" | colnames(data5)=="DR1TALCO" |
+                      colnames(data5)=="WHQ070" | colnames(data5)=="WHQ090" | colnames(data5)=="BMXWT" | colnames(data5)=="BMXARML" |
+                      colnames(data5)=="BMXARMC" | colnames(data5)=="BMXHT" | colnames(data5)=="BMXBMI" | colnames(data5)=="BMXWAIST" | 
+                      colnames(data5)=="PEASCTM1" | colnames(data5)=="BPACSZ" | colnames(data5)=="BPQ020" | colnames(data5)=="DMDMARTL" |
+                      colnames(data5)=="DMDEDUC3" | colnames(data5)=="DMDEDUC2" | colnames(data5)=="RIAGENDR" | colnames(data5)=="RIDRETH1" |
+                      colnames(data5)=="DMDBORN" | colnames(data5)=="DMDCITZN" | colnames(data5)=="DMDYRSUS" | colnames(data5)=="DMDSCHOL" |
+                      colnames(data5)=="DMDHHSIZ" | colnames(data5)=="INDHHINC" | colnames(data5)=="RIDEXPRG"| colnames(data5)=="SIAPROXY" |
+                      colnames(data5)=="SIAINTRP" | colnames(data5)=="WTMEC2YR" | colnames(data5)=="DRABF" | colnames(data5)=="BAQ110" |
+                      colnames(data5)=="BPXML1" | colnames(data5)=="LBXWBCSI" | colnames(data5)=="LBXMCVSI" | colnames(data5)=="WHQ030" | 
+                      colnames(data5)=="MCQ160G" | colnames(data5)=="BPQ040A" | colnames(data5)=="BPQ080" | colnames(data5)=="MCQ160A" | 
+                      colnames(data5)=="MCQ160B" | colnames(data5)=="MCQ160C" | colnames(data5)=="MCQ160D" | colnames(data5)=="MCQ160E" |
+                      colnames(data5)=="MCQ160F" | colnames(data5)=="MCQ220" | colnames(data5)=="MCQ092" | colnames(data5)=="BPXPULS" |
+                      colnames(data5)=="RIDAGEEX")]
+```
+
+```{r, echo=TRUE}
+#1/3 Yes/Borderline-1; 2-No; Missing/Unkown-3
+data5$DIQ010 <- ifelse(data5$DIQ010==1 | data5$DIQ010==3, 1, data5$DIQ010)
+data5$DIQ010  <- replace(data5$DIQ010 , is.na(data5$DIQ010 ), 3)
+data5$DIQ010 <- ifelse(data5$DIQ010==9, 3, data5$DIQ010)
+#3-Missing
+data5$DIQ050 <- replace(data5$DIQ050 , is.na(data5$DIQ050 ), 3)
+data5$HSQ520
+#3-Refused/Don't Know/Missing
+data5$HSQ520 <- ifelse(data5$HSQ520==7 | data5$HSQ520==9, 3, data5$HSQ520)
+data5$HSQ520  <- replace(data5$HSQ520 , is.na(data5$HSQ520 ), 3)
+#1-Excellent/Good; 2-Good/Fair; 3-Poor; 4-Refused/Don'tKnow/Missing
+data5$HSD010 <- ifelse(data5$HSD010==1 | data5$HSD010==2, 1, data5$HSD010)
+data5$HSD010 <- ifelse(data5$HSD010==3 | data5$HSD010==4, 2, data5$HSD010)
+data5$HSD010 <- ifelse(data5$HSD010==5, 3, data5$HSD010)
+data5$HSD010 <- ifelse(data5$HSD010==7 | data5$HSD010==9, 4, data5$HSD010)
+data5$HSD010 <- replace(data5$HSD010, is.na(data5$HSD010), 4)
+#3-Don'tKnow/Missing
+data5$VIQ180 <- ifelse(data5$VIQ180==9, 3, data5$VIQ180)
+data5$VIQ180  <- replace(data5$VIQ180 , is.na(data5$VIQ180 ), 3)
+#3-Don'tKnow/Missing
+data5$VIQ200 <- ifelse(data5$VIQ200==9, 3, data5$VIQ200)
+data5$VIQ200  <- replace(data5$VIQ200 , is.na(data5$VIQ200 ), 3)
+#3-Don'tKnow/Missing
+data5$VIQ220 <- ifelse(data5$VIQ220==9, 3, data5$VIQ220)
+data5$VIQ220  <- replace(data5$VIQ220 , is.na(data5$VIQ220 ), 3)
+#3-Don'tKnow/Missing
+data5$WHQ070 <- ifelse(data5$WHQ070==9, 3, data5$WHQ070)
+data5$WHQ070  <- replace(data5$WHQ070 , is.na(data5$WHQ070 ), 3)
+#3-Don'tKnow/Missing
+data5$WHQ090 <- ifelse(data5$WHQ090==9, 3, data5$WHQ090)
+data5$WHQ090  <- replace(data5$WHQ090 , is.na(data5$WHQ090 ), 3)
+#6-Missing
+data5$BPACSZ  <- replace(data5$WHQ090 , is.na(data5$WHQ090 ), 6)
+#3-Don'tKnow/Missing
+data5$BPQ020 <- ifelse(data5$BPQ020==9, 3, data5$BPQ020)
+data5$BPQ020  <- replace(data5$BPQ020 , is.na(data5$BPQ020 ), 3)
+#1-Married/Living with Partner; 2-Widowed; 3-Divorced/Separated; 4-Never Married; 5-Refused/Missing
+data5$DMDMARTL <- ifelse(data5$DMDMARTL==1 | data5$DMDMARTL==6, 1, data5$DMDMARTL)
+data5$DMDMARTL <- ifelse(data5$DMDMARTL==3 | data5$DMDMARTL==4, 3, data5$DMDMARTL)
+data5$DMDMARTL <- ifelse(data5$DMDMARTL==5, 4, data5$DMDMARTL)
+data5$DMDMARTL[ is.na(data5$DMDMARTL) ] <- 5
+#1-Less than HS D; 2-HS D/AA D; 3- College Grad; 4-Missing/Unknown
+data5$DMDEDUC2 <- ifelse(data5$DMDEDUC2==1 | data5$DMDEDUC2==2, 1, data5$DMDEDUC2)
+data5$DMDEDUC2 <- ifelse(data5$DMDEDUC2==3 | data5$DMDEDUC2==4, 2, data5$DMDEDUC2)
+data5$DMDEDUC2 <- ifelse(data5$DMDEDUC2==5, 3, data5$DMDEDUC2)
+data5$DMDEDUC2 <- ifelse(data5$DMDEDUC2==7 | data5$DMDEDUC2==9, 4, data5$DMDEDUC2)
+data5$DMDEDUC2[ is.na(data5$DMDEDUC2) ] <- 4
+#16-Less than HS/ Less 9th/ Less 5th/Unknown/Missing
+data5$DMDEDUC3 <- ifelse(data5$DMDEDUC3==55 | data5$DMDEDUC3==66 | data5$DMDEDUC3==77 | data5$DMDEDUC3==99, 16, data5$DMDEDUC3)
+data5$DMDEDUC3[ is.na(data5$DMDEDUC3) ] <- 16
+#10-Refused/Missing
+data5$DMDYRSUS <- ifelse(data5$DMDYRSUS==77 | data5$DMDYRSUS==88 | data5$DMDYRSUS==99, 10, data5$DMDYRSUS)
+data5$DMDYRSUS[ is.na(data5$DMDYRSUS) ] <- 10
+#1-In School/Vacation; 2-No; 3-Unknown/Missing
+data5$DMDSCHOL <- ifelse(data5$DMDSCHOL==1 | data5$DMDSCHOL==2, 1, data5$DMDSCHOL)
+data5$DMDSCHOL <- ifelse(data5$DMDSCHOL==3, 2, data5$DMDSCHOL)
+data5$DMDSCHOL <- ifelse(data5$DMDSCHOL==7 | data5$DMDSCHOL==9, 3, data5$DMDSCHOL)
+data5$DMDSCHOL[ is.na(data5$DMDSCHOL) ] <- 3
+#3-Don'tKnow/Missing
+data5$BAQ110  <- replace(data5$BAQ110 , is.na(data5$BAQ110 ), 3)
+#0-Below Median; 1-Above Median; 2-Missing
+data5$BPXML1  <- replace(data5$BPXML1, is.na(data5$BPXML1 ), 2)
+data5$BPXML1 <- ifelse(data5$BPXML1>=140 & data5$BPXML1!=2, 1 ,data5$BPXML1)
+data5$BPXML1 <- ifelse(data5$BPXML1<140 & data5$BPXML1!=2 & data5$BPXML1!=1, 0 ,data5$BPXML1)   
+#4-Refused/Unkown/Missing
+data5$WHQ030 <- ifelse(data5$WHQ030==7 | data5$WHQ030==9, 4, data5$WHQ030)
+data5$WHQ030[ is.na(data5$WHQ030) ] <- 4
+#3-Don'tKnown/Missing
+data5$MCQ160G <- ifelse(data5$MCQ160G==9, 3, data5$MCQ160G)
+data5$MCQ160G[ is.na(data5$MCQ160G) ] <- 3
+#3-Don'tKnown/Missing
+data5$BPQ040A <- ifelse(data5$BPQ040A==9, 3, data5$BPQ040A)
+data5$BPQ040A[ is.na(data5$BPQ040A) ] <- 3
+#3-Don'tKnown/Missing
+data5$BPQ080 <- ifelse(data5$BPQ080==9, 3, data5$BPQ080)
+data5$BPQ080[ is.na(data5$BPQ080) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ160A <- ifelse(data5$MCQ160A==9, 3, data5$MCQ160A)
+data5$MCQ160A[ is.na(data5$MCQ160A) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ160B <- ifelse(data5$MCQ160B==9, 3, data5$MCQ160B)
+data5$MCQ160B[ is.na(data5$MCQ160B) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ160C <- ifelse(data5$MCQ160C==9, 3, data5$MCQ160C)
+data5$MCQ160C[ is.na(data5$MCQ160C) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ160D <- ifelse(data5$MCQ160D==9, 3, data5$MCQ160D)
+data5$MCQ160D[ is.na(data5$MCQ160D) ] <- 3
+#3-Don'tKnown/Missing/Refuse
+data5$MCQ160E <- ifelse(data5$MCQ160E==7 | data5$MCQ160E==9, 3, data5$MCQ160E)
+data5$MCQ160E[ is.na(data5$MCQ160E) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ160F <- ifelse(data5$MCQ160F==9, 3, data5$MCQ160F)
+data5$MCQ160F[ is.na(data5$MCQ160F) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ220 <- ifelse(data5$MCQ220==9, 3, data5$MCQ220)
+data5$MCQ220[ is.na(data5$MCQ220) ] <- 3
+#3-Don'tKnown/Missing
+data5$MCQ092 <- ifelse(data5$MCQ092==9, 3, data5$MCQ092)
+data5$MCQ092[ is.na(data5$MCQ092) ] <- 3
+#3-Don'tKnown/Missing
+data5$DRABF[ is.na(data5$DRABF) ] <- 3
+#3-Don'tKnown/Missing
+data5$BPXPULS[ is.na(data5$BPXPULS) ] <- 3
+#Re-categorize?
+data5$RIDRETH1
+#3-Don'tKnown/Missing
+data5$DMDBORN <- ifelse(data5$DMDBORN==7,3,data5$DMDBORN)
+#3-Don'tKnown/Missing
+data5$DMDCITZN <- ifelse(data5$DMDCITZN==7,3,data5$DMDCITZN)
+#10-Don'tKnown/Missing/Refused
+data5$DMDYRSUS <- ifelse(data5$DMDYRSUS==77 | data5$DMDYRSUS==99 | data5$DMDYRSUS==88, 10, data5$DMDYRSUS)
+data5$DMDYRSUS[ is.na(data5$DMDYRSUS) ] <- 10
+#4-Missing/Unknown
+data5$INDHHINC <- ifelse(data5$INDHHINC==2, 1, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==3, 1, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==4, 1, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==13, 1, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==5, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==6, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==7, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==8, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==9, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==10, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==12, 2, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==11, 3, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==14, 4, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==15, 4, data5$INDHHINC)
+data5$INDHHINC <- ifelse(data5$INDHHINC==77 | data5$INDHHINC==99,4,data5$INDHHINC)
+data5$INDHHINC[ is.na(data5$INDHHINC) ] <- 4
+#3-Missing/Unkown 
+data5$RIDEXPRG[ is.na(data5$RIDEXPRG) ] <- 3
+#Factor variables 
+data5$DIQ010 <-as.factor(data5$DIQ010); data5$DIQ050 <-as.factor(data5$DIQ050)
+data5$HSQ520 <-as.factor(data5$HSQ520); data5$HSD010 <-as.factor(data5$HSD010)
+data5$VIQ180 <-as.factor(data5$VIQ180); data5$VIQ200 <-as.factor(data5$VIQ200)
+data5$VIQ220 <-as.factor(data5$VIQ220); data5$WHQ070 <-as.factor(data5$WHQ070)
+data5$WHQ090 <-as.factor(data5$WHQ090); data5$BPACSZ <-as.factor(data5$BPACSZ)
+data5$BPQ020 <-as.factor(data5$BPQ020); data5$DMDMARTL <-as.factor(data5$DMDMARTL)
+data5$DMDEDUC2 <-as.factor(data5$DMDEDUC2); data5$DMDEDUC3 <-as.factor(data5$DMDEDUC3)
+data5$RIDRETH1 <-as.factor(data5$RIDRETH1); data5$DMDBORN <-as.factor(data5$DMDBORN)
+data5$DMDCITZN <-as.factor(data5$DMDCITZN); data5$DMDYRSUS <-as.factor(data5$DMDYRSUS)
+data5$DMDSCHOL <-as.factor(data5$DMDSCHOL); data5$INDHHINC <-as.factor(data5$INDHHINC)
+data5$DRABF <-as.factor(data5$DRABF); data5$BAQ110 <-as.factor(data5$BAQ110)
+data5$MCQ160G <-as.factor(data5$MCQ160G); data5$BPQ040A <-as.factor(data5$BPQ040A)
+data5$BPQ080 <-as.factor(data5$BPQ080 ); data5$MCQ160A <-as.factor(data5$MCQ160A)
+data5$MCQ160B <-as.factor(data5$MCQ160B); data5$MCQ160C <-as.factor(data5$MCQ160C)
+data5$MCQ160D <-as.factor(data5$MCQ160D); data5$MCQ160E <-as.factor(data5$MCQ160E)
+data5$MCQ160F <-as.factor(data5$MCQ160F); data5$MCQ220 <-as.factor(data5$MCQ220)
+data5$MCQ092 <-as.factor(data5$MCQ092); data5$BPXPULS <-as.factor(data5$BPXPULS)
+data5$RIDEXPRG <- as.factor(data5$RIDEXPRG)
+complete_data5 <- data5[complete.cases(data5),]
+```
+
+###[3c]. Methods/Reults for Predicting Age in Age Dataset 1
+```{r, echo=TRUE, warning=FALSE}
+#complete_data5
+###################################
+#(1) Ridge Regression
+###################################
+library(glmnet)
+x = model.matrix(RIDAGEEX~., data = complete_data5)[,-1]
+y = complete_data5$RIDAGEEX
+grid = 10^seq(10, -2, length =100)
+ridge.mod = glmnet(x, y, alpha = 0, lambda = grid)
+
+set.seed(1) 
+train = sample(1:nrow(x), round(nrow(x)*.70,0)) 
+test = (-train)
+y.test = y[test]
+cv.out = cv.glmnet(x[train,], y[train], alpha = 0) 
+plot(cv.out)
+bestlam = cv.out$lambda.min 
+bestlam
+
+set.seed(1) 
+ridge.pred = predict(ridge.mod, s = bestlam, newx = x[test,])
+mean((ridge.pred - y.test)^2) 
+
+out = glmnet(x, y, alpha = 0) 
+predict(out, type = "coefficients", s = bestlam)[1:136,] 
+
+###################################
+#(2) Lasso
+###################################
+library(glmnet)
+set.seed(1) 
+x = model.matrix(RIDAGEEX~., data = complete_data5)[,-1]
+y = complete_data5$RIDAGEEX
+train = sample(1:nrow(x), round(nrow(x)*.70,0)) 
+test = (-train)
+y.test = y[test]
+
+grid = 10^seq(10, -2, length =100)
+lasso.mod = glmnet(x[train,], y[train], alpha = 1, lambda = grid) 
+plot(lasso.mod)  
+
+set.seed(1)
+cv.out = cv.glmnet(x[train,], y[train], alpha = 1) 
+plot(cv.out)
+bestlam = cv.out$lambda.min 
+lasso.pred = predict(lasso.mod, s = bestlam, newx = x[test,]) 
+mean((lasso.pred - y.test)^2) 
+
+out = glmnet(x, y, alpha = 1, lambda = grid)
+lasso.coef = predict(out, type = "coefficients", s = bestlam)[1:136,]
+lasso.coef[lasso.coef!=0] 
+length(lasso.coef[lasso.coef!=0]) 
+
+###################################
+#(3) Boosting 
+###################################
+library(gbm)
+set.seed(1)
+train = sample(1:nrow(complete_data5), round(nrow(complete_data5)*.70,0))
+complete.test=complete_data5[-train ,"RIDAGEEX"]
+boost.complete=gbm(RIDAGEEX~., data=complete_data5[train,], distribution="gaussian", n.trees=5000, 
+                   interaction.depth=4)
+summary(boost.complete)
+yhat.boost=predict(boost.complete, newdata= complete_data5[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2) 
+
+set.seed(1)
+boost.complete=gbm(RIDAGEEX~.,data=complete_data5[train ,], distribution= "gaussian", n.trees=5000, 
+                   interaction.depth=4, shrinkage =0.2, verbose=F)
+yhat.boost=predict(boost.complete, newdata= complete_data5[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2) 
+
+###################################
+#(4) Bagging/ Regression Tree
+###################################
+library(tree)
+set.seed(1)
+train = sample(1:nrow(complete_data5), nrow(complete_data5)/2)
+tree.data = tree(RIDAGEEX~., complete_data5, subset=train)
+summary(tree.data)
+library(randomForest)
+set.seed(1)
+bag.data = randomForest(RIDAGEEX~., complete_data5, subset=train, mtry=15, importance =TRUE)
+bag.data
+yhat.bag = predict(bag.data , newdata=complete_data5[-train ,])
+complete.test=complete_data5[-train ,"RIDAGEEX"]
+plot(yhat.bag , complete.test)
+mean((yhat.bag - complete.test)^2) 
+
+bag.complete = randomForest(RIDAGEEX~., data=complete_data5 , subset=train, mtry=15, ntree=25)
+yhat.bag = predict(bag.complete , newdata=complete_data5[-train ,])
+mean((yhat.bag - complete.test)^2) 
+
+set.seed(1)
+rf.complete = randomForest(RIDAGEEX ~., data=complete_data5, subset=train, mtry=18, ntree=30)
+yhat.rf = predict(rf.complete , newdata = complete_data5[-train ,])
+mean((yhat.rf - complete.test)^2) 
+head(importance(rf.complete))
+head(varImpPlot(rf.complete))
+
+set.seed(1)
+rf.complete = randomForest(RIDAGEEX ~., data=complete_data5, subset=train, importance =TRUE)
+yhat.rf = predict(rf.complete , newdata = complete_data5[-train ,])
+mean((yhat.rf - complete.test)^2) 
+head(importance(rf.complete))
+head(varImpPlot(rf.complete))
+```
+
+###[4a]. Variables Contained in Age Dataset 2
+```{r}
+colnames(complete_data6)
+```
+
+```
+1.	DIQ010: Doctor told you have diabetes (1-150 Years)
+2.	DIQ050: Taking insulin now (1-150 Years)
+3.	HSQ520: Flu, pneumonia, ear infection in past 30 days? (1-150 Years)
+4.	HSD010: General Health Condition (12-150 Years)
+5.	VIQ180: Eye surgery for near sightedness (12-150 Years)
+6.	VIQ200: Eye surgery for cataracts (12-150 Years)
+7.	VIQ220: Glasses/ contacts worn for distance; (12-150 Years)
+8.	DR1TKCAL: Energy (Calories) (0-150 Years)
+9.	DR1TPROT: Protein (0-150 Years)
+10.	DR1TCARB: Carbohydrate (0-150 Years)
+11.	DR1TSUGR: Total sugars (0-150 Years)
+12.	DR1TFIBE: Dietary Fiber (0-150 Years) 
+13.	DR1TTFAT: Total Fat (0-150 Years)
+14.	DR1TCHOL: Cholesterol (0-150 Years)
+15.	DR1TATOC: Vitamin E (0-150 Years)
+16.	DR1TVARA: Vitamin A (0-150 Years)
+17.	DR1TBCAR: Beta-carotene (0-150 Years)
+18.	DR1TFA: Folic Acid (0-150 Years)
+19.	DR1TVC: Vitamin C (0-150 Years)
+20.	DR1TVK: Vitamin K (0-150 Years)
+21.	DR1TCALC: Calcium (0-150 Years)
+22.	DR1TMAGN: Magnesium (0-150 Years)
+23.	DR1TIRON: Iron (0-150 Years)
+24.	DR1TSODI: Sodium (0-150 Years)
+25.	DR1TPOTA: Potassium (0-150 Years)
+26.	DR1TCAFF: Caffeine (0-150 Years)
+27.	DR1TALCO: Alcohol (0-150 Years)
+28.	WHQ070: Tried to lose weight in past year (16-150 Years)
+29.	WHQ090: Tried not to gain weight in past year (16-150 Years)
+30.	BMXWT: Weight (0-150 Years)
+31.	BMXARML: Upper Arm Length (0-150 Years)
+32.	BMXARMC: Arm Circumference (0-150 Years)
+33.	BMXHT: Standing Height (2-150 Years)
+34.	BMXBMI: Body Mass Index (2-150 Years)
+35.	PEASCTM1: Blood Pressure Time in Seconds (0-150 Years)
+36.	BPACSZ: Coded cuff size; Recode missing (8-150 Years)
+37.	BPQ020: Ever told you had high blood pressure (16-150 Years)
+38.	DMDMARTL: Martial Status
+39.	DMDEDUC3: Education (6-19 Years)
+40.	DMDEDUC2: Eudcation (20-150 Years)
+41.	RIAGENDR: Gender (0-150 Years)
+42.	RIDRETH1: Race/Ethnicity (0-150 Years)
+43.	DMDBORN: Country of Birth (0-150 Years)
+44.	DMDCITZN: Citizenship Status (0-150 Years)
+45.	DMDYRSUS: Length of time in US (0-150 Years)
+46.	DMDSCHOL: Now attending school (6-19 Years)
+47.	DMDHHSIZ: Total number of people in the household (0-150 Years)
+48.	INDHHIC: Annual Household Income (0-150 Years)
+49.	RIDEXPRG: Pregnancy Status at Exam (8-59 Years)
+50.	SIAPROXY: Was a proxy used in SP interview
+51.	SIAINTRP: Was an interpreter used in SP interview 
+52.	WTMEC2YR: Full Sample 2 Year MEC Exam Weight (0-150 Years)
+53.	DRABF: Breast-fed infant (either day) (0-150 Years)
+54.	BAQ110: Can you stand on your own? (40-150 Years)
+55.	BPXML1: Pulse Maximum Inflation Levels
+56.	WHQ030: How do you consider your weight (16-150 Years)
+57.	MCQ160G: Ever told you had emphysema (20-150 Years)
+58.	BPQ040A: Taking prescription for hypertension
+59.	BPQ080: Doctor told you had high cholesterol (20-150 Years)
+60.	MCQ160A: Ever told you had arthritis (20-150 Years)
+61.	MCQ160B: Ever told you had congestive heart failure (20-150 Years)
+62.	MCQ160C: Ever told you had coronary heart disease (20-150 Years)
+63.	MCQ160D: Ever told you had angina (20-150 Years)
+64.	MCQ160E: Ever told you had heart attack; (20-150 Years)
+65.	MCQ160F: Ever told you had stroke; (20-150 Years)
+66.	MCQ220: Ever told you have cancer; (20-150 Years)
+67.	MCQ092: Ever receive blood transfusion; (6-150 Years)
+68. DR1TSFAT: Total Saturated Fat (0-150 Years)
+69. BPXPULS: Is pulse irregular?
+70. RIDAGEEX: Patient age when exam was given 
+```
+
+###[4b]. Rational Variables Contained in Age Dataset 2
+
+###[4d]. Methods/Reults for Predicting Age in Age Dataset 2
+```{r, echo=TRUE}
+#complete_data6
+###################################
+#(1) Ridge Regression
+###################################
+x = model.matrix(RIDAGEEX~., data = complete_data6)[,-1]
+y = complete_data6$RIDAGEEX
+grid = 10^seq(10, -2, length =100)
+ridge.mod = glmnet(x, y, alpha = 0, lambda = grid)
+
+set.seed(1) 
+train = sample(1:nrow(x), round(nrow(x)*.70,0)) 
+test = (-train)
+y.test = y[test]
+cv.out = cv.glmnet(x[train,], y[train], alpha = 0) 
+plot(cv.out)
+bestlam = cv.out$lambda.min 
+bestlam
+
+set.seed(1) 
+ridge.pred = predict(ridge.mod, s = bestlam, newx = x[test,])
+mean((ridge.pred - y.test)^2) 
+
+out = glmnet(x, y, alpha = 0) 
+predict(out, type = "coefficients", s = bestlam)[1:133,] 
+
+###################################
+#(2) Lasso
+###################################
+set.seed(1) 
+x = model.matrix(RIDAGEEX~., data = complete_data6)[,-1]
+y = complete_data6$RIDAGEEX
+train = sample(1:nrow(x), round(nrow(x)*.70,0)) 
+test = (-train)
+y.test = y[test]
+
+grid = 10^seq(10, -2, length =100)
+lasso.mod = glmnet(x[train,], y[train], alpha = 1, lambda = grid) 
+plot(lasso.mod)  
+
+set.seed(1)
+cv.out = cv.glmnet(x[train,], y[train], alpha = 1) 
+plot(cv.out)
+bestlam = cv.out$lambda.min 
+lasso.pred = predict(lasso.mod, s = bestlam, newx = x[test,]) 
+mean((lasso.pred - y.test)^2) 
+
+out = glmnet(x, y, alpha = 1, lambda = grid)
+lasso.coef = predict(out, type = "coefficients", s = bestlam)[1:133,]
+lasso.coef[lasso.coef!=0] 
+length(lasso.coef[lasso.coef!=0]) 
+
+###################################
+#(3) Boosting 
+###################################
+library(gbm)
+set.seed(1)
+train = sample(1:nrow(complete_data6), round(nrow(complete_data6)*.70,0))
+complete.test=complete_data6[-train ,"RIDAGEEX"]
+boost.complete=gbm(RIDAGEEX~., data=complete_data6[train,], distribution="gaussian", n.trees=5000, 
+                   interaction.depth=4)
+summary(boost.complete)
+yhat.boost=predict(boost.complete, newdata= complete_data6[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2) 
+
+boost.complete=gbm(RIDAGEEX~.,data=complete_data6[train,], distribution= "gaussian", n.trees=5000, 
+                   interaction.depth=4, shrinkage =0.2, verbose=F)
+yhat.boost=predict(boost.complete, newdata= complete_data6[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2) 
+
+###################################
+#(4) Bagging/ Regression Tree
+###################################
+library(tree)
+set.seed(1)
+train = sample(1:nrow(complete_data6), round(nrow(complete_data6)*.70,0))
+tree.data = tree(RIDAGEEX~., complete_data6, subset=train)
+summary(tree.data)
+library(randomForest)
+set.seed(1)
+bag.data = randomForest(RIDAGEEX~., complete_data6, subset=train, mtry=15, importance =TRUE)
+bag.data
+yhat.bag = predict(bag.data , newdata=complete_data6[-train,])
+complete.test=complete_data6[-train ,"RIDAGEEX"]
+plot(yhat.bag , complete.test); abline (0,1)
+mean((yhat.bag - complete.test)^2) 
+
+bag.complete = randomForest(RIDAGEEX~., data=complete_data6 , subset=train, mtry=15, ntree=25)
+yhat.bag = predict(bag.complete , newdata=complete_data6[-train ,])
+mean((yhat.bag - complete.test)^2)
+
+set.seed(1)
+rf.complete = randomForest(RIDAGEEX ~., data=complete_data6, subset=train, mtry=18, ntree=30)
+yhat.rf = predict(rf.complete , newdata = complete_data6[-train ,])
+mean((yhat.rf - complete.test)^2) 
+
+set.seed(1)
+rf.complete = randomForest(RIDAGEEX ~., data=complete_data6, subset=train, importance =TRUE)
+yhat.rf = predict(rf.complete , newdata = complete_data6[-train ,])
+mean((yhat.rf - complete.test)^2) 
+head(importance(rf.complete))
+head(varImpPlot(rf.complete))
+```
+
+
+###[5a]. Variables Contained in Age Dataset 3
+```{r}
+colnames(complete_data7)
+```
+ [1] "BAQ110"   "BMXHT"    "BMXBMI"   "BMXARML"  "BMXARMC"  "BMXWAIST" "BPQ020"   "BPQ040A"  "BPQ080"   "PEASCTM1" "BPACSZ"   "BPXPULS"  "BPXML1"  
+[14] "RIAGENDR" "RIDAGEEX" "DMDBORN"  "DMDCITZN" "DMDEDUC2" "DMDMARTL" "DMDHHSIZ" "INDHHINC" "SIAPROXY" "SIAINTRP" "WTMEC2YR" "DIQ010"   "DIQ050"  
+[27] "DRABF"    "DR1TKCAL" "DR1TPROT" "DR1TCARB" "DR1TSUGR" "DR1TFIBE" "DR1TTFAT" "DR1TSFAT" "DR1TCHOL" "DR1TIRON" "DR1TSODI" "DR1TCAFF" "DR1TALCO"
+[40] "HSD010"   "LBXWBCSI" "LBXMCVSI" "MCQ092"   "MCQ160A"  "MCQ160B"  "MCQ160C"  "MCQ160D"  "MCQ160E"  "MCQ160F"  "MCQ160G"  "MCQ220"   "VIQ180"  
+[53] "VIQ200"   "VIQ220"   "WHQ030"  
+
+```
+1.	DIQ010: Doctor told you have diabetes (1-150 Years)
+2.	DIQ050: Taking insulin now (1-150 Years)
+3.	HSD010: General Health Condition (12-150 Years)
+4.	VIQ180: Eye surgery for near sightedness (12-150 Years)
+5.	VIQ200: Eye surgery for cataracts (12-150 Years)
+6.	VIQ220: Glasses/ contacts worn for distance; (12-150 Years)
+7.	DR1TKCAL: Energy (Calories) (0-150 Years)
+8.	DR1TPROT: Protein (0-150 Years)
+9.	DR1TCARB: Carbohydrate (0-150 Years)
+10.	DR1TSUGR: Total sugars (0-150 Years)
+11.	DR1TFIBE: Dietary Fiber (0-150 Years) 
+12.	DR1TTFAT: Total Fat (0-150 Years)
+13. DR1TSFAT: Total Saturated Fat (0-150 Years)
+14.	DR1TCHOL: Cholesterol (0-150 Years)
+15.	DR1TIRON: Iron (0-150 Years)
+16.	DR1TSODI: Sodium (0-150 Years)
+17.	DR1TCAFF: Caffeine (0-150 Years)
+18.	DR1TALCO: Alcohol (0-150 Years)
+19.	BMXARML: Upper Arm Length (0-150 Years)
+20.	BMXARMC: Arm Circumference (0-150 Years)
+21.	BMXHT: Standing Height (2-150 Years)
+22.	BMXBMI: Body Mass Index (2-150 Years)
+23. BMXWAIST: Waist Circumference (2-150 Years)
+24.	PEASCTM1: Blood Pressure Time in Seconds (0-150 Years)
+25.	BPACSZ: Coded cuff size; Recode missing (8-150 Years)
+26.	BPQ020: Ever told you had high blood pressure (16-150 Years)
+27.	DMDMARTL: Martial Status
+28.	DMDEDUC2: Eudcation (20-150 Years)
+29.	RIAGENDR: Gender (0-150 Years)
+30.	DMDBORN: Country of Birth (0-150 Years)
+31.	DMDCITZN: Citizenship Status (0-150 Years)
+32.	DMDHHSIZ: Total number of people in the household (0-150 Years)
+33.	INDHHINC: Annual Household Income (0-150 Years)
+34.	SIAPROXY: Was a proxy used in SP interview
+35.	SIAINTRP: Was an interpreter used in SP interview 
+36.	WTMEC2YR: Full Sample 2 Year MEC Exam Weight (0-150 Years)
+37.	DRABF: Breast-fed infant (either day) (0-150 Years)
+38.	BAQ110: Can you stand on your own? (40-150 Years)
+39.	BPXML1: Pulse Maximum Inflation Levels
+40. LBXWBCSI: White blood cell count (1-150 Years)
+41. LBXMCVSI: Mean cell volume (1-150 Years)
+42.	WHQ030: How do you consider your weight (16-150 Years)
+43.	MCQ160G: Ever told you had emphysema (20-150 Years)
+44.	BPQ040A: Taking prescription for hypertension
+45.	BPQ080: Doctor told you had high cholesterol (20-150 Years)
+46.	MCQ160A: Ever told you had arthritis (20-150 Years)
+47.	MCQ160B: Ever told you had congestive heart failure (20-150 Years)
+48.	MCQ160C: Ever told you had coronary heart disease (20-150 Years)
+49.	MCQ160D: Ever told you had angina (20-150 Years)
+50.	MCQ160E: Ever told you had heart attack; (20-150 Years)
+51.	MCQ160F: Ever told you had stroke; (20-150 Years)
+52.	MCQ220: Ever told you have cancer; (20-150 Years)
+53.	MCQ092: Ever receive blood transfusion; (6-150 Years)
+54. BPXPULS: Is pulse irregular?
+55. RIDAGEEX: Patient age when exam was given 
+```
+
+###[5b]. Rational Variables Contained in Age Dataset 3
+
+###[5d]. Methods/Reults for Predicting Age in Age Dataset 3
+```{r, echo=TRUE}
+#complete_data7
+###################################
+#(1) Ridge Regression
+###################################
+x = model.matrix(RIDAGEEX~., data = complete_data7)[,-1]
+y = complete_data7$RIDAGEEX
+grid = 10^seq(10, -2, length =100)
+ridge.mod = glmnet(x, y, alpha = 0, lambda = grid)
+
+set.seed(1) 
+train = sample(1:nrow(x), round(nrow(x)*.70,0)) 
+test = (-train)
+y.test = y[test]
+cv.out = cv.glmnet(x[train,], y[train], alpha = 0) 
+plot(cv.out)
+bestlam = cv.out$lambda.min 
+bestlam
+
+set.seed(1) 
+ridge.pred = predict(ridge.mod, s = bestlam, newx = x[test,])
+mean((ridge.pred - y.test)^2) 
+
+out = glmnet(x, y, alpha = 0) 
+predict(out, type = "coefficients", s = bestlam)[1:86,] 
+
+###################################
+#(2) Lasso
+###################################
+set.seed(1) 
+x = model.matrix(RIDAGEEX~., data = complete_data7)[,-1]
+y = complete_data7$RIDAGEEX
+train = sample(1:nrow(x), round(nrow(x)*.70,0)) 
+test = (-train)
+y.test = y[test]
+
+grid = 10^seq(10, -2, length =100)
+lasso.mod = glmnet(x[train,], y[train], alpha = 1, lambda = grid) 
+plot(lasso.mod)  
+
+set.seed(1)
+cv.out = cv.glmnet(x[train,], y[train], alpha = 1) 
+plot(cv.out)
+bestlam = cv.out$lambda.min 
+lasso.pred = predict(lasso.mod, s = bestlam, newx = x[test,]) 
+mean((lasso.pred - y.test)^2) 
+
+out = glmnet(x, y, alpha = 1, lambda = grid)
+lasso.coef = predict(out, type = "coefficients", s = bestlam)[1:86,]
+lasso.coef[lasso.coef!=0] 
+length(lasso.coef[lasso.coef!=0]) 
+
+###################################
+#(3) Boosting 
+###################################
+library(gbm)
+set.seed(1)
+train = sample(1:nrow(complete_data7), round(nrow(complete_data7)*.70,0))
+complete.test=complete_data7[-train ,"RIDAGEEX"]
+boost.complete=gbm(RIDAGEEX~., data=complete_data7[train,], 
+                   distribution="gaussian", n.trees=5000, interaction.depth=4)
+summary(boost.complete)
+yhat.boost=predict(boost.complete, newdata= complete_data7[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2) 
+
+set.seed(1)
+boost.complete=gbm(RIDAGEEX~.,data=complete_data7[train ,], distribution= "gaussian", n.trees=5000, 
+                   interaction.depth=4, shrinkage =0.2, verbose=F)
+yhat.boost=predict(boost.complete, newdata= complete_data7[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2) 
+
+###################################
+#(4) Bagging/ Regression Tree
+###################################
+library(tree)
+set.seed(1)
+train = sample(1:nrow(complete_data7), nrow(complete_data7)/2)
+tree.data = tree(RIDAGEEX~., complete_data7, subset=train)
+summary(tree.data)
+library(randomForest)
+set.seed(1)
+bag.data = randomForest(RIDAGEEX~., complete_data7, subset=train, mtry=15, importance =TRUE)
+bag.data
+yhat.bag = predict(bag.data , newdata=complete_data7[-train ,])
+complete.test=complete_data7[-train ,"RIDAGEEX"]
+plot(yhat.bag , complete.test); abline (0,1)
+mean((yhat.bag - complete.test)^2) 
+
+bag.complete = randomForest(RIDAGEEX~., data=complete_data7 , subset=train, mtry=15, ntree=25)
+yhat.bag = predict(bag.complete , newdata=complete_data7[-train ,])
+mean((yhat.bag - complete.test)^2) 
+
+set.seed(1)
+rf.complete = randomForest(RIDAGEEX ~., data=complete_data7, subset=train, mtry=18, ntree=30)
+yhat.rf = predict(rf.complete , newdata = complete_data7[-train ,])
+mean((yhat.rf - complete.test)^2) 
+
+set.seed(1)
+rf.complete = randomForest(RIDAGEEX ~., data=complete_data7, subset=train, importance =TRUE)
+yhat.rf = predict(rf.complete , newdata = complete_data7[-train ,])
+mean((yhat.rf - complete.test)^2) 
+head(importance(rf.complete))
+head(varImpPlot(rf.complete))
+```
+
+
+##VI. Appendix Predicting Mortaltiy
+
+###[6]. Histogram/ Summary of Exam Mortality
+```{r, warning=FALSE}
+data_50 <- nhanes_data[which(as.numeric(nhanes_data$RIDAGEEX)>=50*12),]
+hist(data_50$mortstat)
+data_50$mortstat <- as.factor(data_50$mortstat)
+summary(data_50$mortstat)
+```
+
+
+###[7a]. Variables Contained in Mortality Dataset 1
+```{r}
+colnames(new_data3)
+```
+
+###[7b]. Rational Variables Contained in Mortality Dataset 1
+
+###[7c]. Methods/Result in Mortality Dataset 1
+```{r, echo=TRUE}
+###################################
+#(1) LASSO
+###################################
+new_data3$mortstat <- as.factor(new_data3$mortstat)
+set.seed(1)
+library(glmnet)
+x = model.matrix(mortstat ~ ., family = binomial(), data = new_data3)[,-1]
+y = new_data3$mortstat
+y <- as.numeric(y)
+grid = 10^seq(10, -2, length =100)
+set.seed(1) 
+train = sample(nrow(new_data3), round(nrow(new_data3)*.70),1)
+test = (-train)
+y.test = y[test]
+lasso.mod = glmnet(x[train,], y[train], alpha = 1, lambda = grid) 
+
+cv.out = cv.glmnet(x[train,], y[train], alpha = 1) 
+plot(cv.out)
+bestlam = cv.out$lambda.min 
+lasso.pred = predict(lasso.mod, s = bestlam, newx = x[test,]) 
+mean((lasso.pred - y.test)^2) 
+
+out = glmnet(x, y, alpha = 1, lambda = grid)
+lasso.coef = predict(out, type = "coefficients", s = bestlam)[1:197,]
+lasso.coef[lasso.coef!=0] 
+length(lasso.coef[lasso.coef!=0]) 
+
+###################################
+#(2) Boosting 
+###################################
+library(gbm)
+set.seed(1)
+new_data3$mortstat <- as.numeric(new_data3$mortstat)
+new_data3$mortstat <- new_data3$mortstat - 1 
+new_data3$mortstat <- as.numeric(new_data3$mortstat)
+train = sample(1:nrow(new_data3), round(nrow(new_data3)*.70,0))
+complete.test=new_data3[-train ,"mortstat"]
+boost.complete=gbm(mortstat~., data=new_data3[train,], distribution="bernoulli", n.trees=5000,
+                   interaction.depth=4)
+yhat.boost=predict(boost.complete, newdata= new_data3[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2) 
+
+set.seed(1)
+boost.complete=gbm(mortstat~.,data=new_data3[train,], distribution= "bernoulli", n.trees=5000, 
+                   interaction.depth=4, shrinkage =0.2, verbose=F)
+yhat.boost=predict(boost.complete, newdata= new_data3[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2) 
+
+set.seed(1)
+boost.complete=gbm(mortstat~.,data=new_data3[train,], distribution= "bernoulli", n.trees=5000, 
+                   interaction.depth=4, shrinkage =0.1, verbose=F)
+yhat.boost=predict(boost.complete, newdata= new_data3[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2) 
+
+###################################
+#(3) SVM Classifier
+###################################
+library(e1071)
+set.seed(2)
+new_data3$mortstat <- as.factor(new_data3$mortstat)
+train = sample(nrow(new_data3), round(nrow(new_data3)*.70,0))
+tune.out = tune(svm, mortstat~., data=new_data3[train,], kernel ="linear", 
+                ranges=list(cost=c(0.00001, 0.0001, 0.001, 0.01, 0.1, 1)  )) 
+summary(tune.out)
+bestmod = tune.out$best.model
+table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))
+svmfit=svm(mortstat ~., data=new_data3 , kernel="linear", cost=bestmod$cost, gamma=bestmod$gamma, scale=TRUE)
+summary(svmfit)
+(table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[2] + 
+ table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[3]) /
+(table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[1] +
+ table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[2] + 
+ table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[3] +
+ table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[4])
+
+set.seed(2)
+tune.out = tune(svm, mortstat~., data=new_data3[train,], kernel ="radial", 
+                ranges=list(cost=c(0.001, 0.01, 0.1, 1, 5, 10)))
+summary(tune.out)
+bestmod = tune.out$best.model
+table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))
+svmfit=svm(mortstat ~., data=new_data3 , kernel="radial", cost=bestmod$cost, gamma=bestmod$gamma, scale=TRUE)
+summary(svmfit)
+(table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[2] + 
+ table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[3]) /
+(table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[1] +
+ table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[2] + 
+ table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[3] +
+ table(true=new_data3[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data3[-train,]))[4])
+
+```
+
+
+###[8a]. Variables Contained in Mortality Dataset 2
+```{r}
+colnames(new_data4)
+```
+
+```
+```
+
+###[8b]. Rational for Variables Contained in Mortality Dataset 2
+
+###[8c]. Methods/Results for Mortality Dataset 2
+```{r, echo=TRUE}
+###################################
+#(1) LASSO
+###################################
+new_data4$mortstat <- as.factor(new_data4$mortstat)
+library(glmnet)
+x = model.matrix(mortstat ~ ., family = binomial(), data = new_data4)
+y = new_data4$mortstat
+y <- as.numeric(y)
+grid = 10^seq(10, -2, length =100)
+set.seed(1) 
+train = sample(1781, 1246)
+test = (-train)
+y.test = y[test]
+lasso.mod = glmnet(x[train,], y[train], alpha = 1, lambda = grid) 
+
+cv.out = cv.glmnet(x[train,], y[train], alpha = 1) 
+plot(cv.out)
+bestlam = cv.out$lambda.min 
+lasso.pred = predict(lasso.mod, s = bestlam, newx = x[test,]) 
+mean((lasso.pred - y.test)^2) 
+
+out = glmnet(x, y, alpha = 1, lambda = grid)
+lasso.coef = predict(out, type = "coefficients", s = bestlam)[1:43,]
+lasso.coef[lasso.coef!=0] 
+
+###################################
+#(2) Boosting 
+###################################
+library(gbm)
+set.seed(1)
+new_data3$mortstat <- as.numeric(new_data3$mortstat)
+train = sample(1:nrow(new_data4), round(nrow(new_data4)*.70,0))
+complete.test=new_data4[-train ,"mortstat"]
+boost.complete=gbm(mortstat~., data=new_data4[train,], 
+                   distribution="bernoulli", n.trees=5000, interaction.depth=4)
+yhat.boost=predict(boost.complete, newdata= new_data4[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2)
+
+boost.complete=gbm(mortstat~.,data=new_data4[train ,], distribution= "bernoulli", n.trees=5000, 
+                   interaction.depth=4, shrinkage =0.2, verbose=F)
+yhat.boost=predict(boost.complete, newdata= new_data4[-train,], n.trees=5000)
+mean((yhat.boost - complete.test)^2)
+
+###################################
+#(5) SVM Classifier
+###################################
+library(e1071)
+set.seed(2)
+train = sample(nrow(new_data3), round(nrow(new_data3)*.70,0))
+tune.out = tune(svm, mortstat~., data=new_data4[train,], kernel ="linear", 
+                ranges=list(cost=c(0.00001, 0.0001,0.001, 0.01, 0.1, 1) ))
+summary(tune.out)
+bestmod = tune.out$best.model
+summary(bestmod)
+table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))
+svmfit=svm(mortstat ~., data=new_data4 , kernel="linear", cost=bestmod$cost, gamma=bestmod$gamma, scale=TRUE)
+summary(svmfit)
+(table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[2] + 
+ table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[3]) /
+(table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[1] +
+ table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[2] + 
+ table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[3] +
+ table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[4])
+
+set.seed(2)
+tune.out = tune(svm, mortstat~., data=new_data4[train,], kernel ="radial", 
+                ranges=list(cost=c(0.001, 0.01, 0.1, 1, 5, 10)))
+summary(tune.out)
+bestmod = tune.out$best.model
+summary(bestmod)
+table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))
+svmfit=svm(mortstat ~., data=new_data4 , kernel="radial", cost=bestmod$cost, gamma=bestmod$gamma, scale=TRUE)
+summary(svmfit)
+(table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[2] + 
+ table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[3]) /
+(table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[1] +
+ table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[2] + 
+ table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[3] +
+ table(true=new_data4[-train,"mortstat"], pred=predict(tune.out$best.model, newdata=new_data4[-train,]))[4])
+```
+
+##VII.  Reference 
+[1] https://wwwn.cdc.gov/nchs/nhanes/ContinuousNhanes/Default.aspx?BeginYear=2003 
